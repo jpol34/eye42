@@ -94,17 +94,57 @@ what was done, when, and why — lives in the pr history for the gh repo)
   reinterpret trump. (2) Absent a call, the led tile's high end, unless a
   spoken cue names a different end or number outright (e.g. leading 4-5 while
   saying "4s are trump," not just "low"/"high" — the low/high phrasing is
-  only a sometimes-used convention, almost always at the hand's very start,
-  and shouldn't be hand-tuned or generalized before real footage shows the
-  actual pattern at this table). (3) Trump can also be learned or confirmed
-  mid-hand from an actual observed off-suit play (a player can't follow the
-  led suit and plays what turns out to be trump, announced or not) — a live,
-  camera-observable signal that needs no knowledge of the rest of anyone's
-  hand. (4) Under splash/plunge, the bidder's partner calls trump — already
-  correctly modeled. Only (1) and (4) are built; (2) beyond the very first
-  lead and (3) are not — deliberately deferred until real footage shows how
-  trump actually gets established/clarified at the table, rather than
-  building toward a guessed pattern now.
+  only a sometimes-used convention, almost always at the hand's very start).
+  (3) Trump can also be learned or confirmed mid-hand from an actual observed
+  off-suit play. (4) Under splash/plunge, the bidder's partner calls trump —
+  already correctly modeled. Only (1) and (4) are built.
+  - **(2) is deliberately not generalized to every trick, not just the
+    first — this itself IS the folklore-generalization to avoid, not a
+    separate bug fix from it.** `hand.py`'s `_pending_cue` today is only
+    consumed on the hand's very first lead; that reads like an arbitrary
+    restriction worth "fixing," but the restriction is doing real work: the
+    cue convention is rare beyond a hand's opening lead, and `TrumpCueHeard`
+    carries no timestamp, so generalizing consumption to every trick's lead
+    creates a real speech-lags-video misattribution risk at every trick
+    boundary instead of just once (a cue meant for trick N's lead could
+    arrive after trick N's lead was already processed, get silently held,
+    and then get wrongly applied to trick N+1's led tile). Don't build this
+    without a timing/ordering guard, and don't build the guard speculatively
+    either — both need real transcript-vs-video lag data to design against.
+    If/when this is revisited, `_ensure_trick_started`'s `trick.trump = ...`
+    resync (currently done ad hoc only in the first-lead branch) needs to be
+    carried to every consumption site, and it needs real test coverage
+    (`hear_trump_cue`/`_pending_cue` routing has none today) — cue heard on
+    trick 3's lead is consumed; a cue heard after trump is already confirmed
+    is dropped and doesn't leak forward; a cue meant for trick N doesn't
+    bleed into trick N+1.
+  - **(3)'s non-oracle mechanism, sketched for whoever designs it once
+    footage exists — deliberately not built now.** The oracle mechanism
+    removed earlier (`_check_trump_contradiction`) needed a lookup into a
+    player's *remaining concealed hand* to tell "genuinely void in a suit"
+    from "held a follower and revoked" — permanently impossible. But a
+    different, purely logical mechanism needs no such lookup: if a player
+    fails to follow led suit S under live hypothesis H (a candidate, not yet
+    confirmed), and that same player later plays a tile that computes as
+    suit S under H, that's a hard contradiction — they can't be void in S
+    under H and also hold/play S under H, so H must be wrong. No folklore
+    weighting needed, just the same publicly-observed play stream every
+    other mechanism here already sees. `TrumpHypothesisTracker.
+    observe_void` is already a documented no-op stub for exactly this;
+    `observe_contradiction` is already a fully reusable, hand-agnostic
+    primitive (verified: its own implementation only touches `self.weights`,
+    no hand-knowledge coupling survives in it after the oracle-removal
+    pass). What's missing is per-hypothesis void tracking (a player can be
+    void in suit S under candidate H1 but not H2, since suit membership
+    depends on trump) — real state-machine complexity, not a trivial wire-up:
+    it has to interact correctly with `observe_contradiction`'s existing
+    weight-reopening fallback (`_last_weights_before_empty`) — when a
+    candidate's weight collapses and later gets restored from a snapshot,
+    decide whether its void state restores alongside it or resets — exactly
+    the class of edge that broke in subtle ways during this project's
+    trump-hypothesis reversibility work. Needs its own design pass and
+    plan-critic review before building, not a bundled addition to anything
+    else.
 - **Recovering a force-closed trick's missing tiles.** When a trick
   force-closes short (fewer than 4 plays observed), the hand is marked
   `disputed` and its count is not trusted for the rest of the hand's
@@ -117,12 +157,23 @@ what was done, when, and why — lives in the pr history for the gh repo)
   pile-inspection signal won't always recover everything. No reconciliation
   mechanism is built; this is only a note for whoever designs one once a
   real pile-inspection signal exists.
-- **Confidence field on speech-sourced events** (`BidMade`, `Passed`,
-  `TrumpCalled`, `TrumpCueHeard`) — `TilePlayed.confidence` already exists,
-  but speech (the less reliable channel) currently has no equivalent. Worth
-  adding once there's a concrete place it needs to plug into; deferred until
-  real footage/transcripts show where speech confidence actually needs to
-  matter, rather than guessing at the integration point now.
+- **Confidence field on speech-sourced events — do not add yet, and note a
+  related dead-code question first.** `BidMade`/`Passed`/`TrumpCalled`/
+  `TrumpCueHeard` have no `confidence` field; `TilePlayed.confidence` does.
+  But `TilePlayed.confidence` is itself currently dead — every consumer of
+  it was deleted in the oracle-removal pass, so there are zero reads of it
+  anywhere in `engine/` today — and `TrumpCalled` (the event type) is
+  entirely unconstructed anywhere (`call_trump()` takes raw `(caller,
+  trump)` args, not this event). Adding more confidence fields with no
+  consumer on top of one that's already unconsumed would be pure unforced
+  dead weight. `speech/bid_parser.py`'s `Utterance.confidence`/
+  `BidCandidate.combined_score` (`confidence * plausibility`) is a working
+  precedent for confidence-weighted speech scoring, so the idea isn't
+  unprecedented — it just isn't wired into the engine layer, and shouldn't
+  be guessed at before there's a concrete consumer. Separate, smaller
+  decision worth making on its own: cut `TilePlayed.confidence` and
+  `TrumpCalled` now that both are fully dead, or keep them dormant the same
+  way `observe_next_dealer`/`TilesDealt` were kept — not resolved here.
 - **No shared clock/frame convention between perception and speech stubs** —
   `perception.tile_detect` timestamps with `frame_index: int`, `speech.
   bid_parser` with `start_time`/`end_time` in seconds. Needed before a played
