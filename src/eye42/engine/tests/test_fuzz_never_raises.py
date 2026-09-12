@@ -20,7 +20,6 @@ import random
 
 import pytest
 
-from eye42.engine.bidding import BiddingError
 from eye42.engine.events import IrregularEndSignal, TilePlayed, TilesDealt
 from eye42.engine.game import GameState
 from eye42.engine.hand import HandError, HandState
@@ -41,7 +40,13 @@ def _random_event_sequence(rng: random.Random, length: int):
         kind = rng.choice(["bid", "pass", "trump", "play", "deal"])
         player = rng.randrange(4)
         if kind == "bid":
-            events.append(("bid", player, rng.randrange(29, 43)))
+            if rng.random() < 0.3:
+                # Marks bids (splash/plunge territory). Without these the whole
+                # splash/plunge upgrade path -- including the marks-upgrade crash
+                # this suite exists to catch -- was invisible to the fuzzer.
+                events.append(("bid", player, 0, rng.randrange(1, 5)))
+            else:
+                events.append(("bid", player, rng.randrange(29, 43), 0))
         elif kind == "pass":
             events.append(("pass", player))
         elif kind == "trump":
@@ -59,17 +64,16 @@ def _run_sequence(hand: HandState, events) -> None:
     for event in events:
         kind = event[0]
         if kind == "bid":
-            _, player, amount = event
-            try:
-                hand.bid(player, amount)
-            except BiddingError:
-                pass  # BiddingRound's own strict, documented contract -- not in scope here
+            _, player, amount, marks = event
+            # No try/except any more: HandState.bid is now the non-strict wrapper
+            # every other HandState event method already is -- an out-of-turn,
+            # under-the-high-bid or after-close bid is logged and dropped, not
+            # raised. BiddingRound itself stays strict; that contract is tested at
+            # the BiddingRound level in test_state_machine.py.
+            hand.bid(player, amount, marks)
         elif kind == "pass":
             _, player = event
-            try:
-                hand.bid_pass(player)
-            except BiddingError:
-                pass
+            hand.bid_pass(player)
         elif kind == "trump":
             _, player, trump = event
             if trump not in range(7):

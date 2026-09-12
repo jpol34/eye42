@@ -7,6 +7,7 @@ from eye42.engine.events import IrregularEndSignal, TilePlayed
 from eye42.engine.game import GameState
 from eye42.engine.hand import HandOutcomeKind, HandState
 from eye42.engine.probability import estimate_bid_probability, tile_hold_probability
+from eye42.engine.repair import IrregularityKind
 from eye42.engine.scoring import HandScoreTracker
 from eye42.engine.tiles import Tile, effective_suit, is_trump, suits_of
 from eye42.engine.trick import Trick
@@ -685,3 +686,259 @@ def test_each_trick_is_evaluated_for_contradictions_exactly_once():
     assert len(hand.tricks) == 3
     assert len(seen) == 3  # once per trick...
     assert len(set(seen)) == 3  # ...and never the same trick twice
+
+
+# ---------------------------------------------------------------------------
+# bug-hunt fix pass: marks-bid upgrade (F1 / F2) and non-strict bidding (F6)
+# ---------------------------------------------------------------------------
+
+def _marks_bid_hand(bidder_tiles, *, dealer: int = 3, bidder: int = 0):
+    """A HandState whose seat ``bidder`` holds ``bidder_tiles``. Only the
+    bidder's doubles matter to the upgrade, so the other three seats are filled
+    with whatever is left over (the deal is still a real 28 tiles)."""
+    from eye42.engine.tiles import full_set
+
+    rest = sorted(full_set() - set(bidder_tiles), key=lambda t: (t.high, t.low))
+    hands = {bidder: list(bidder_tiles)}
+    others = [p for p in range(4) if p != bidder]
+    for i, seat in enumerate(others):
+        hands[seat] = rest[i * 7:(i + 1) * 7]
+    return HandState(dealer=dealer, hands=hands)
+
+
+_THREE_DOUBLES = [
+    Tile.of(6, 6), Tile.of(5, 5), Tile.of(4, 4),
+    Tile.of(6, 5), Tile.of(6, 4), Tile.of(6, 3), Tile.of(6, 2),
+]
+_FOUR_DOUBLES = [
+    Tile.of(6, 6), Tile.of(5, 5), Tile.of(4, 4), Tile.of(3, 3),
+    Tile.of(6, 5), Tile.of(6, 4), Tile.of(6, 3),
+]
+
+
+def test_one_mark_bid_by_a_three_doubles_hand_does_not_raise():
+    """F1. Three doubles is the SPLASH doubles threshold, but SPLASH also needs
+    two marks -- so a 1-mark bid has no upgrade available. The old code checked
+    only the doubles count and let ``upgrade_to_splash_or_plunge`` raise
+    ``BiddingError`` mid-``bid()``: after the contract was set, before the score
+    tracker was built, leaving a contract with no scorer for the next trick to
+    crash on."""
+    hand = _marks_bid_hand(_THREE_DOUBLES)
+    hand.bid(0, 0, marks=1)
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)
+
+    assert hand.contract == Contract(bidder=0, kind=BidKind.MARKS, amount=1)
+    assert hand.scorer is not None  # the crash was a contract with no scorer
+    assert hand.scorer.contract is hand.contract
+
+
+def test_four_doubles_at_two_marks_is_a_splash_not_a_failed_plunge():
+    """F1. Four doubles clears the PLUNGE doubles bar but 2 marks is below the
+    PLUNGE marks floor -- this is a perfectly legal SPLASH. The fix must pick the
+    highest *satisfiable* kind, not gate on the minimum and not raise."""
+    hand = _marks_bid_hand(_FOUR_DOUBLES)
+    hand.bid(0, 0, marks=2)
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)
+
+    assert hand.contract.kind == BidKind.SPLASH
+    assert hand.contract.amount == 2
+    assert hand.scorer.contract.kind == BidKind.SPLASH
+
+
+def test_four_doubles_at_four_marks_is_a_plunge():
+    hand = _marks_bid_hand(_FOUR_DOUBLES)
+    hand.bid(0, 0, marks=4)
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)
+
+    assert hand.contract.kind == BidKind.PLUNGE
+    assert hand.contract.trump_caller == partner_of(0)
+
+
+def test_splash_upgrade_fires_when_three_passes_close_the_bidding():
+    """F2. The canonical splash close is "marks bid, then three passes", which
+    resolves the contract inside ``bid_pass``. The upgrade used to be wired only
+    into ``bid()``, so this -- the normal case -- left a plain MARKS contract and
+    handed trump/the first lead to the wrong seat."""
+    hand = _marks_bid_hand(_THREE_DOUBLES)
+    hand.bid(0, 0, marks=2)
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)  # bidding closes here, inside bid_pass
+
+    assert hand.contract.kind == BidKind.SPLASH
+    assert hand.contract.trump_caller == partner_of(0) == 2
+    # Contract is frozen and the upgrade replaces the object, so the tracker has
+    # to be built from the upgraded one -- order is load-bearing here.
+    assert hand.scorer.contract is hand.contract
+    assert hand.scorer.contract.requires_sweep is True
+
+
+def test_hand_bid_out_of_turn_is_logged_and_dropped_not_raised():
+    """F6. ``BiddingRound`` stays strict; ``HandState.bid``/``bid_pass`` are the
+    non-strict wrapper every other HandState event method already is."""
+    hand = HandState(dealer=3)  # rotation is 0, 1, 2, 3
+    hand.bid(2, 32)  # seat 2 bids out of turn
+
+    assert hand.contract is None
+    assert hand.bidding.current_bidder == 0  # the round never saw it
+    kinds = {i.kind for i in hand.repairs.irregularities}
+    assert IrregularityKind.BID_NOT_LEGAL in kinds
+
+    # ...and the hand carries on normally from there.
+    hand.bid(0, 30)
+    hand.bid(1, 30)  # not above the high bid -- also dropped, not raised
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)
+    assert hand.contract == Contract(bidder=0, kind=BidKind.POINTS, amount=30)
+
+
+def test_bidding_after_the_contract_closed_is_dropped_not_raised():
+    hand = HandState(dealer=3)
+    hand.bid(0, 30)
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)
+    before = hand.scorer
+
+    hand.bid(2, 41)
+    hand.bid_pass(2)
+
+    assert hand.contract == Contract(bidder=0, kind=BidKind.POINTS, amount=30)
+    assert hand.scorer is before  # not rebuilt, so no recorded tricks are lost
+    assert IrregularityKind.BID_NOT_LEGAL in {i.kind for i in hand.repairs.irregularities}
+
+
+def test_bidding_round_itself_stays_strict():
+    """The strictness F6 wraps is deliberately still there at the pure-rules
+    layer -- other callers may want it."""
+    round_ = BiddingRound(dealer=3)
+    with pytest.raises(BiddingError):
+        round_.record_bid(_bid(2, 32))  # seat 0 is expected
+
+
+# ---------------------------------------------------------------------------
+# bug-hunt fix pass: trump cue normalization (B5) and tracker divergence (B4)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("cue", ["the low end", "", "sixes", "  ", "trump is low"])
+def test_unrecognized_trump_cue_does_not_hard_confirm_the_high_end(cue: str):
+    """B5. A bare ``cue == "low"`` meant every other string -- an empty
+    transcription, "the low end", "sixes" -- silently hard-confirmed the tile's
+    *high* end, permanently. Speech transcription fills this field, so
+    unnormalized input is the expected case, and a phrase that plainly says
+    "low" must not resolve to high; it falls through to weighted tracking."""
+    tracker = TrumpHypothesisTracker()
+    tracker.observe_cue_on_lead(Tile.of(5, 3), cue=cue)
+    assert tracker.is_confirmed is False  # falls through to weighted tracking
+    assert tracker.weights[5] == pytest.approx(0.3)
+    assert tracker.weights[3] == pytest.approx(0.3)
+
+
+@pytest.mark.parametrize("cue,expected", [
+    ("low", 3), ("high", 5), ("LOW", 3), (" High ", 5), ("Low\n", 3),
+])
+def test_recognized_trump_cue_still_hard_confirms_after_normalization(cue: str, expected: int):
+    tracker = TrumpHypothesisTracker()
+    tracker.observe_cue_on_lead(Tile.of(5, 3), cue=cue)
+    assert tracker.confirmed == expected
+    assert tracker.hard_confirmed is True
+
+
+def test_reconcile_logs_when_the_trick_and_the_tracker_diverge():
+    """B4 (reshaped). ``_reconcile_trump_for_play`` can switch the trick onto a
+    candidate that is not the tracker's best guess, and the two then disagree
+    with nothing logged. Only the logging half is fixed: rewarding the new
+    candidate changes the exact post-reconcile weights other behaviour is pinned
+    to, and activates the still-deferred ``_bias_toward`` overwrite hazard."""
+    hand = HandState(dealer=3, hands={
+        0: [Tile.of(6, 6), Tile.of(3, 3), Tile.of(6, 5)],
+        1: [Tile.of(0, 0), Tile.of(5, 0), Tile.of(4, 3)],
+        2: [Tile.of(1, 0), Tile.of(2, 2), Tile.of(1, 1)],
+        3: [Tile.of(2, 1), Tile.of(5, 2), Tile.of(5, 1)],
+    })
+    hand.bid(0, 30)
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)
+    for player, tile in [
+        (0, Tile.of(6, 6)), (1, Tile.of(0, 0)), (2, Tile.of(1, 0)), (3, Tile.of(2, 1))
+    ]:
+        hand.play_tile(TilePlayed(player=player, tile=tile))
+
+    # 6 leads, but 5 (the next candidate) is *not* consistent with what seat 1 is
+    # about to play, so the reconcile has to reach past it to 4.
+    hand.trump_tracker.weights = {n: 0.0 for n in range(7)}
+    hand.trump_tracker.weights[6] = 0.4
+    hand.trump_tracker.weights[5] = 0.35
+    hand.trump_tracker.weights[4] = 0.25
+
+    hand.play_tile(TilePlayed(player=0, tile=Tile.of(3, 3)))
+    hand.play_tile(TilePlayed(player=1, tile=Tile.of(5, 0)))
+
+    assert hand._current_trick.trump == 4
+    assert hand.trump_tracker.best_guess == 5  # the two genuinely disagree
+    assert IrregularityKind.TRUMP_HYPOTHESIS_DIVERGED in {
+        i.kind for i in hand.repairs.irregularities
+    }
+
+
+# ---------------------------------------------------------------------------
+# bug-hunt fix pass: voids under a trump confirmed after the lead (B1)
+# ---------------------------------------------------------------------------
+
+def _hand_with_trump_confirmed_one_tile_late() -> HandState:
+    """Speech lagging video by a single tile: seat 0 leads, the trick's
+    ``led_suit`` freezes under the *guessed* trump, and only then does the
+    trump call land -- on a different number, under which the led tile counts
+    as a different suit entirely."""
+    hand = HandState(dealer=3)
+    hand.bid(0, 30)
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)
+
+    hand.play_tile(TilePlayed(player=0, tile=Tile.of(5, 3)))  # no cue: 5/3 both live
+    assert hand._current_trick.led_suit == 3
+    hand.call_trump(0, trump=6)  # ...and the call arrives one tile late
+    for player, tile in [(1, Tile.of(1, 0)), (2, Tile.of(2, 0)), (3, Tile.of(4, 0))]:
+        hand.play_tile(TilePlayed(player=player, tile=tile))
+    return hand
+
+
+def test_voids_are_skipped_for_a_trick_led_under_a_different_trump():
+    """B1. Under trump 6 the led 5-3 counts as a *5*, not the 3 the trick froze.
+    Every "didn't follow suit 3" judgement would be measured against the wrong
+    suit and produce confidently-wrong void constraints (recorded on 66% of 400
+    randomized hands where the call lands one tile late)."""
+    hand = _hand_with_trump_confirmed_one_tile_late()
+
+    assert len(hand.tricks) == 1
+    assert all(not v for v in hand.voids.values())
+    # Still stamped, or the next trick sees a mismatch and wipes good voids.
+    assert hand._voids_trump == 6
+
+
+def test_voids_are_still_recorded_for_a_trick_whose_lead_is_consistent():
+    """The control for the test above: an ordinary trick, confirmed before the
+    lead, must still record its voids exactly as before."""
+    hand = HandState(dealer=3)
+    hand.bid(0, 30)
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)
+    hand.call_trump(0, trump=6)
+
+    hand.play_tile(TilePlayed(player=0, tile=Tile.of(6, 6)))  # trump led
+    for player, tile in [(1, Tile.of(1, 0)), (2, Tile.of(2, 0)), (3, Tile.of(4, 0))]:
+        hand.play_tile(TilePlayed(player=player, tile=tile))
+
+    assert hand.voids[1] == {6}
+    assert hand.voids[2] == {6}
+    assert hand.voids[3] == {6}

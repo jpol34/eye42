@@ -39,6 +39,10 @@ class IrregularityKind(Enum):
     TRUMP_CALLED_BY_WRONG_SEAT = auto()
     PLAY_BEFORE_CONTRACT = auto()
     DEALER_ROTATION_MISMATCH = auto()
+    BID_NOT_LEGAL = auto()  # a bid/pass BiddingRound rejected; dropped, hand continues
+    TRICK_COUNT_EXCEEDED = auto()  # a play arriving after all 7 tricks are complete
+    TRUMP_HYPOTHESIS_DIVERGED = auto()  # trick.trump != tracker.best_guess after reconcile
+    TRICK_CLOSED_EARLY = auto()  # a seat-already-played read force-started the next trick
 
 
 @dataclass(frozen=True)

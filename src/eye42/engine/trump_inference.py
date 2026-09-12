@@ -113,9 +113,17 @@ class TrumpHypothesisTracker:
             return
 
         if cue is not None and not led_tile.is_double:
-            trump = led_tile.low if cue == "low" else led_tile.high
-            self.confirm(trump)
-            return
+            # Normalized and membership-checked, not compared with a bare `== "low"`.
+            # `TrumpCueHeard.cue` is filled by speech transcription, so "the low
+            # end", "HIGH", "", and "sixes" are all expected inputs -- and under a
+            # bare comparison every one of them resolved to the *high* end and
+            # hard-confirmed it, permanently and silently. Anything unrecognized
+            # falls through to the ordinary no-cue weighting below.
+            normalized = cue.strip().lower()
+            if normalized in ("low", "high"):
+                trump = led_tile.low if normalized == "low" else led_tile.high
+                self.confirm(trump)
+                return
 
         if led_tile.is_double:
             self._bias_toward({led_tile.high}, weight=0.85)

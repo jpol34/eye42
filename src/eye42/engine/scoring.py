@@ -59,7 +59,11 @@ class HandScoreTracker:
                 team_of(t.winner) != self.bidding_team  # type: ignore[arg-type]
                 for t in self.completed_tricks
             )
-        remaining_points = TOTAL_HAND_POINTS - self.points_claimed_total
+        # Clamped at 0: if bookkeeping ever over-counts (more tricks recorded
+        # than a hand can hold), a negative "remaining" would make the shortfall
+        # comparison report a set on a hand the bidding team actually won.
+        # Belt-and-braces behind HandState's refusal to open an 8th trick.
+        remaining_points = max(0, TOTAL_HAND_POINTS - self.points_claimed_total)
         shortfall = self.contract.points_needed - self.bidding_team_points
         return shortfall > remaining_points
 
