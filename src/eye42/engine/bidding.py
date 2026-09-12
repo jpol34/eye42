@@ -15,10 +15,9 @@ from .events import BidMade, Passed
 
 
 # House-rule thresholds for the two doubles-based marks bids. Named constants
-# rather than inline literals because two modules now have to agree on them:
-# ``upgrade_to_splash_or_plunge`` enforces the marks floor, and
-# ``HandState._maybe_upgrade_marks_bid`` has to check the very same floor
-# *before* calling it (it must never raise -- see the bug-hunt fix pass).
+# rather than inline literals so any caller of ``upgrade_to_splash_or_plunge``
+# can check them against a bid before calling it (the method raises if they
+# aren't met).
 SPLASH_MIN_DOUBLES = 3
 SPLASH_MIN_MARKS = 2
 PLUNGE_MIN_DOUBLES = 4

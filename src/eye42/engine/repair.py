@@ -32,7 +32,6 @@ class Conflict:
 class IrregularityKind(Enum):
     OUT_OF_TURN = auto()
     TRICK_FORCE_CLOSED = auto()
-    TILE_NOT_IN_HAND = auto()
     REVOKE = auto()
     SEAT_TILE_COUNT_ANOMALY = auto()
     MISDEAL_TILE_COUNT = auto()
@@ -41,7 +40,6 @@ class IrregularityKind(Enum):
     DEALER_ROTATION_MISMATCH = auto()
     BID_NOT_LEGAL = auto()  # a bid/pass BiddingRound rejected; dropped, hand continues
     TRICK_COUNT_EXCEEDED = auto()  # a play arriving after all 7 tricks are complete
-    TRUMP_HYPOTHESIS_DIVERGED = auto()  # trick.trump != tracker.best_guess after reconcile
     TRICK_CLOSED_EARLY = auto()  # a seat-already-played read force-started the next trick
 
 

@@ -115,46 +115,6 @@ def test_completed_hand_reports_its_actual_final_defense_points():
     assert result.expected_defense_points == float(hand.scorer.defending_team_points)
 
 
-def test_fully_known_hands_gives_deterministic_probability():
-    hand = HandState(dealer=3, hands={
-        0: [Tile.of(6, 6), Tile.of(6, 5), Tile.of(6, 4), Tile.of(6, 3), Tile.of(6, 2), Tile.of(6, 1), Tile.of(6, 0)],
-        1: [Tile.of(0, 0), Tile.of(1, 0), Tile.of(1, 1), Tile.of(2, 0), Tile.of(2, 1), Tile.of(2, 2), Tile.of(3, 0)],
-        2: [Tile.of(3, 1), Tile.of(3, 3), Tile.of(3, 2), Tile.of(4, 0), Tile.of(4, 2), Tile.of(4, 3), Tile.of(4, 4)],
-        3: [Tile.of(5, 1), Tile.of(4, 1), Tile.of(5, 2), Tile.of(5, 3), Tile.of(5, 4), Tile.of(5, 5), Tile.of(5, 0)],
-    })
-    hand.bid(0, 30)
-    hand.bid_pass(1)
-    hand.bid_pass(2)
-    hand.bid_pass(3)
-    hand.call_trump(0, trump=6)
-
-    # Seat 0 holds every trump and will sweep all 7 tricks under the estimator's
-    # policy -- with fully known hands the result must be exactly 1.0, not a
-    # sampled approximation.
-    result = estimate_bid_probability(hand)
-    assert result.probability == 1.0
-    assert result.samples == 0  # no hidden information: exact, not sampled
-    # Seat 0 sweeps every trick, so the defense finishes on zero.
-    assert result.expected_defense_points == 0.0
-
-
-def test_tile_hold_probability_with_known_hands_is_exact():
-    hand = HandState(dealer=3, hands={
-        0: [Tile.of(6, 6)],
-        1: [Tile.of(1, 0)],
-        2: [Tile.of(2, 0)],
-        3: [Tile.of(3, 0)],
-    })
-    hand.bid(0, 30)
-    hand.bid_pass(1)
-    hand.bid_pass(2)
-    hand.bid_pass(3)
-    hand.call_trump(0, trump=6)
-
-    assert tile_hold_probability(hand, Tile.of(6, 6), player=0) == 1.0
-    assert tile_hold_probability(hand, Tile.of(6, 6), player=1) == 0.0
-
-
 def test_tile_hold_probability_uses_voids_to_deduce_holder():
     """Every trick below is trump-led, so seats 1-3 all fail to follow suit 6
     from trick 1 onward and become void in trump -- the last unseen trump tile
@@ -242,30 +202,6 @@ def test_mid_trick_estimate_does_not_crash_and_is_sane():
     assert result is not None
     assert 0.0 <= result.probability <= 1.0
     assert 0.0 <= result.expected_defense_points <= TOTAL_HAND_POINTS
-
-
-def test_simulated_hand_points_account_for_the_whole_hand():
-    """A fully-known hand is simulated to completion, so the two teams' points
-    must together account for the whole hand -- asserted as an invariant rather
-    than two magic numbers a minor policy tweak would invalidate."""
-    hand = HandState(dealer=3, hands={
-        0: [Tile.of(6, 6), Tile.of(6, 5), Tile.of(6, 4), Tile.of(6, 3), Tile.of(6, 2), Tile.of(6, 1), Tile.of(6, 0)],
-        1: [Tile.of(0, 0), Tile.of(1, 0), Tile.of(1, 1), Tile.of(2, 0), Tile.of(2, 1), Tile.of(2, 2), Tile.of(3, 0)],
-        2: [Tile.of(3, 1), Tile.of(3, 3), Tile.of(3, 2), Tile.of(4, 0), Tile.of(4, 2), Tile.of(4, 3), Tile.of(4, 4)],
-        3: [Tile.of(5, 1), Tile.of(4, 1), Tile.of(5, 2), Tile.of(5, 3), Tile.of(5, 4), Tile.of(5, 5), Tile.of(5, 0)],
-    })
-    hand.bid(0, 41)
-    hand.bid_pass(1)
-    hand.bid_pass(2)
-    hand.bid_pass(3)
-    hand.call_trump(0, trump=6)
-
-    result = estimate_bid_probability(hand)
-    assert result is not None
-    # Seat 0 holds every trump and sweeps, so its team takes the full 42 and the
-    # defense finishes on the remainder.
-    assert result.expected_defense_points == TOTAL_HAND_POINTS - 42
-    assert result.probability == 1.0  # 42 >= 41
 
 
 # ---------------------------------------------------------------------------
@@ -404,27 +340,20 @@ def test_tile_hold_for_a_seat_with_no_tiles_left_is_zero():
 # ---------------------------------------------------------------------------
 
 def test_misdeal_guard_does_not_block_an_exact_answer():
-    """A short constructed deal trips misdeal_suspected by design. The guard
-    exists to keep the *sampler* away from inconsistent bookkeeping -- it must
-    not suppress an answer that needs no sampling at all."""
-    hand = HandState(dealer=3, hands={
-        0: [Tile.of(6, 6)],
-        1: [Tile.of(1, 0)],
-        2: [Tile.of(2, 0)],
-        3: [Tile.of(3, 0)],
-    })
+    """A suspected misdeal must not suppress an answer that needs no sampling at
+    all -- an observed play is ground truth regardless of the deal's bookkeeping."""
+    hand = HandState(dealer=3)
     hand.bid(0, 30)
     hand.bid_pass(1)
     hand.bid_pass(2)
     hand.bid_pass(3)
     hand.call_trump(0, trump=6)
-
+    hand.record_deal(TilesDealt(dealer=3, counts={0: 8, 1: 7, 2: 7, 3: 6}))
     assert hand.misdeal_suspected is True
-    assert tile_hold_probability(hand, Tile.of(6, 6), player=0) == 1.0
-    assert tile_hold_probability(hand, Tile.of(6, 6), player=1) == 0.0
-    # And an already-played tile is answered from observation regardless.
+
     hand.play_tile(TilePlayed(player=0, tile=Tile.of(6, 6)))
     assert tile_hold_probability(hand, Tile.of(6, 6), player=0) == 1.0
+    assert tile_hold_probability(hand, Tile.of(6, 6), player=1) == 0.0
 
 
 def test_misdeal_suppresses_the_sampled_estimate():
@@ -440,13 +369,14 @@ def test_misdeal_suppresses_the_sampled_estimate():
 
 def _hand_with_voids_under_a_stale_trump() -> HandState:
     """Trick 1 led in trump 6 records voids[1..3] == {6} under ``_voids_trump ==
-    6``. The confirmed trump then changes value *mid-trick* (a soft confirmation
-    reopened and re-confirmed elsewhere), so ``HandState`` has not yet reached
-    the trick close where it would drop them."""
+    6``. The confirmed trump then changes value *mid-trick*: the legitimate
+    trump-caller calls trump again with a different value, which hard-re-
+    confirms it (there is no guard against calling twice), so ``HandState`` has
+    not yet reached the trick close where it would drop the stale voids."""
     hand = _trump_led_first_trick_hand()
     assert hand._voids_trump == 6
     assert hand.voids[1] == {6}
-    hand.trump_tracker._soft_confirm(3)
+    hand.call_trump(0, trump=3)
     assert hand._voids_trump == 6  # not cleared until the next trick closes
     return hand
 
@@ -561,8 +491,8 @@ def test_wilson_interval_clamps_out_of_range_success_counts():
 
 
 def test_tile_hold_probability_returns_none_for_an_out_of_range_seat():
-    """B6. ``hand.hands[player]`` on the fully-known-hands branch raised a bare
-    KeyError. This module's contract for "can't answer that" is ``None``."""
+    """B6. An out-of-range seat is API misuse, not a table event -- this
+    module's contract for "can't answer that" is ``None``, never an exception."""
     hand = _trump_led_first_trick_hand()
     for player in (-1, 4, 99):
         assert tile_hold_probability(hand, Tile.of(6, 1), player=player) is None

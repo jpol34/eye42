@@ -116,20 +116,6 @@ def test_no_hand_event_sequence_raises(seed: int):
 
 
 @pytest.mark.parametrize("seed", SEEDS)
-def test_no_hand_event_sequence_raises_with_known_hands(seed: int):
-    """Same fuzz, but with hands known -- this is the branch that exercises
-    _reconcile_trump_for_play, revoke detection, and the hand.remove guard."""
-    rng = random.Random(seed)
-    shuffled = list(ALL_TILES)
-    rng.shuffle(shuffled)
-    hands = {p: shuffled[p * 7:(p + 1) * 7] for p in range(4)}
-    hand = HandState(dealer=rng.randrange(4), hands=hands)
-    events = _random_event_sequence(rng, length=60)
-    _run_sequence(hand, events)
-    _exercise_probability(hand, rng)
-
-
-@pytest.mark.parametrize("seed", SEEDS)
 def test_no_game_sequence_raises(seed: int):
     rng = random.Random(seed)
     game = GameState(starting_dealer=rng.randrange(4))

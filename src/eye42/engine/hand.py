@@ -1,12 +1,13 @@
 """Orchestrates one hand: bidding -> trump resolution -> trick play -> scoring,
 including the set/redeal/concession edge cases.
 
-Tile identity, trump, and trick-winner/turn-order are treated as jointly resolved
-per the plan: ``TrumpHypothesisTracker`` narrows trump using observed (trusted)
-play, and full-hand knowledge (when available, e.g. in tests or once perception
-can read a deal) lets ``Trick.play`` enforce follow-suit legality directly. Repairs
-to noisy tile reads are logged with provenance rather than applied in place, so a
-later-proven-wrong correction can be rolled back.
+No player's concealed hand is ever known during live play -- perception only ever
+observes a tile once it is played, with no hole-camera equivalent. Trump is
+therefore resolved from observed (trusted) play alone: an explicit call, a cue
+resolved against the led tile, or ``TrumpHypothesisTracker``'s weighted narrowing
+over the led-tile/void evidence a real camera+mic system can actually produce.
+Repairs to noisy tile reads are logged with provenance rather than applied in
+place, so a later-proven-wrong correction can be rolled back.
 
 A second, distinct class of problem lives here too: real human rule-breaks (an
 out-of-turn play, a genuine revoke, a wrong-seat trump call, a bad deal). Per the
@@ -24,13 +25,8 @@ from enum import Enum, auto
 from typing import Dict, List, Optional
 
 from .bidding import (
-    PLUNGE_MIN_DOUBLES,
-    PLUNGE_MIN_MARKS,
-    SPLASH_MIN_DOUBLES,
-    SPLASH_MIN_MARKS,
     BiddingError,
     BiddingRound,
-    BidKind,
     Contract,
     team_of,
 )
@@ -55,7 +51,6 @@ class HandError(ValueError):
 @dataclass
 class HandState:
     dealer: int
-    hands: Optional[Dict[int, List[Tile]]] = None  # full deal, when known (e.g. tests)
     bidding: BiddingRound = field(init=False)
     trump_tracker: TrumpHypothesisTracker = field(default_factory=TrumpHypothesisTracker, init=False)
     repairs: RepairLog = field(default_factory=RepairLog, init=False)
@@ -75,20 +70,6 @@ class HandState:
 
     def __post_init__(self) -> None:
         self.bidding = BiddingRound(dealer=self.dealer)
-        if self.hands is not None:
-            self._check_constructed_deal()
-
-    def _check_constructed_deal(self) -> None:
-        counts = {p: len(tiles) for p, tiles in self.hands.items()}  # type: ignore[union-attr]
-        all_tiles = [t for tiles in self.hands.values() for t in tiles]  # type: ignore[union-attr]
-        bad = sum(counts.values()) != 28 or any(c != 7 for c in counts.values()) or len(all_tiles) != len(set(all_tiles))
-        if bad:
-            self.misdeal_suspected = True
-            self.repairs.log_irregularity(Irregularity(
-                kind=IrregularityKind.MISDEAL_TILE_COUNT,
-                reason=f"constructed hand counts {counts} do not form a valid 28-tile deal",
-                needs_confirmation=True,
-            ))
 
     # ---- bidding -----------------------------------------------------
 
@@ -124,49 +105,10 @@ class HandState:
 
     def _on_bidding_closed(self) -> None:
         """The one place that reacts to bidding having just resolved, shared by
-        ``bid`` and ``bid_pass``.
-
-        Order is load-bearing, not stylistic: the splash/plunge upgrade replaces
-        the (frozen) ``Contract`` object, so it must run *before*
-        ``_start_score_tracker`` captures a reference to it -- otherwise the
-        tracker scores the hand against the un-upgraded contract. Splitting this
-        across the two entry points is what made the upgrade inert for the
-        canonical "marks bid, then three passes" close, which resolves inside
-        ``bid_pass``.
-        """
+        ``bid`` and ``bid_pass``."""
         if not self.bidding.is_done:
             return
-        self._maybe_upgrade_marks_bid()
         self._start_score_tracker()
-
-    def _maybe_upgrade_marks_bid(self) -> None:
-        """A plain marks bid is reclassified as splash/plunge once the bidder's
-        doubles are known (only possible when we have the full deal).
-
-        Picks the *highest* kind whose doubles count and marks minimum are both
-        satisfied, and never raises: a 4-doubles hand that bid only 2-3 marks is
-        a perfectly legal SPLASH (it just can't be a PLUNGE), and a 3-doubles
-        1-mark bid is an ordinary MARKS bid with no upgrade available at all.
-        Blindly calling ``upgrade_to_splash_or_plunge`` on the doubles count
-        alone raised ``BiddingError`` on both of those completely ordinary bids,
-        mid-``bid()``, after the contract was set but before the score tracker
-        existed -- leaving a contract with no scorer for the next trick to
-        detonate on.
-        """
-        contract = self.bidding.contract
-        if contract is None or contract.kind != BidKind.MARKS:
-            return
-        if self.hands is None or contract.bidder not in self.hands:
-            return
-        doubles = sum(1 for t in self.hands[contract.bidder] if t.is_double)
-        marks = contract.amount
-        if doubles >= PLUNGE_MIN_DOUBLES and marks >= PLUNGE_MIN_MARKS:
-            target = BidKind.PLUNGE
-        elif doubles >= SPLASH_MIN_DOUBLES and marks >= SPLASH_MIN_MARKS:
-            target = BidKind.SPLASH
-        else:
-            return
-        self.bidding.upgrade_to_splash_or_plunge(target)
 
     def _start_score_tracker(self) -> None:
         if self.bidding.contract is None:
@@ -363,29 +305,6 @@ class HandState:
         # they currently still work.)
         self._seen_tiles.setdefault(event.tile, event.player)
 
-        hand = self.hands.get(event.player) if self.hands else None
-
-        if trick.led_suit is not None and hand is not None and not self.trump_tracker.is_confirmed:
-            trick.trump = self._reconcile_trump_for_play(trick, event.player, event.tile, hand)
-            if trick.trump != self.trump_tracker.best_guess:
-                # The reconcile switched this trick onto a candidate the tracker
-                # doesn't (yet) lead with -- e.g. one it had already disproven at
-                # full confidence. Deliberately logged rather than "fixed" by
-                # biasing the tracker toward the new pick: that reward changes the
-                # exact post-reconcile weights other behaviour is pinned to, and
-                # activates the still-deferred _bias_toward overwrite hazard. The
-                # divergence is what was actually harmful about it going unnoticed.
-                self.repairs.log_irregularity(Irregularity(
-                    kind=IrregularityKind.TRUMP_HYPOTHESIS_DIVERGED,
-                    reason=(
-                        f"trick adjudicated under trump {trick.trump} while the tracker's "
-                        f"best guess is {self.trump_tracker.best_guess}"
-                    ),
-                    player=event.player,
-                    needs_confirmation=True,
-                    confidence=0.5,
-                ))
-
         self._plays_by_seat[event.player] = self._plays_by_seat.get(event.player, 0) + 1
         if self._plays_by_seat[event.player] > 7:
             self.misdeal_suspected = True
@@ -396,23 +315,8 @@ class HandState:
                 needs_confirmation=True,
             ))
 
-        violations = trick.play(event.player, event.tile, hand=hand, strict=False)
+        violations = trick.play(event.player, event.tile, strict=False)
         self._log_play_violations(event, trick, violations)
-
-        if hand is not None:
-            if event.tile in hand:
-                hand.remove(event.tile)
-            else:
-                # A revoke, a duplicate/misread tile, or a misdeal can all land
-                # here -- the play is still ground truth, so record it and move
-                # on rather than crashing on list.remove(x not in list).
-                self.disputed = True
-                self.repairs.log_irregularity(Irregularity(
-                    kind=IrregularityKind.TILE_NOT_IN_HAND,
-                    reason=f"seat {event.player} played {event.tile}, not in their known remaining hand",
-                    player=event.player,
-                    needs_confirmation=True,
-                ))
 
         if trick.is_complete:
             if trick.force_closed:
@@ -430,17 +334,6 @@ class HandState:
                 reason=f"seat {event.player} played out of turn",
                 player=event.player,
             ))
-        if PlayViolation.REVOKE in violations and self.trump_tracker.is_confirmed:
-            self.disputed = True
-            self.repairs.log_irregularity(Irregularity(
-                kind=IrregularityKind.REVOKE,
-                reason=(
-                    f"seat {event.player} played {event.tile} off suit {trick.led_suit} "
-                    "while holding a follower"
-                ),
-                player=event.player,
-                needs_confirmation=True,
-            ))
         if PlayViolation.TRICK_FULL in violations or PlayViolation.SEAT_ALREADY_PLAYED in violations:
             self.repairs.log_irregularity(Irregularity(
                 kind=IrregularityKind.SEAT_TILE_COUNT_ANOMALY,
@@ -449,56 +342,7 @@ class HandState:
                 needs_confirmation=True,
             ))
 
-    def _reconcile_trump_for_play(self, trick: Trick, player: int, tile: Tile, hand: List[Tile]) -> int:
-        """A play that looks illegal under the current best-guess trump, when we
-        know the player's hand, means the *guess* is wrong (real players can't
-        illegally revoke) — not that the play is invalid. Find a candidate trump
-        consistent with this play instead of raising, and soft-eliminate the old
-        guess as a contradiction.
-        """
-        assert trick.led_suit is not None
-        current = trick.trump
-
-        def consistent(trump: int) -> bool:
-            if effective_suit(tile, trump, trick.led_suit) == trick.led_suit:
-                return True
-            # Off-suit is only legal if the player holds no follower under `trump`.
-            return not any(
-                effective_suit(t, trump, trick.led_suit) == trick.led_suit for t in hand
-            )
-
-        if consistent(current):
-            return current
-
-        for candidate in sorted(self.trump_tracker.weights, key=lambda n: -self.trump_tracker.weights[n]):
-            if candidate != current and consistent(candidate):
-                self.trump_tracker.observe_contradiction({current}, confidence=1.0)
-                return candidate
-
-        # No candidate reconciles this play under any trump hypothesis -- either
-        # a tile misread, or a genuine revoke that happens to look inconsistent
-        # under every candidate. Log both possibilities; the play is still
-        # recorded (ground truth) via the caller's strict=False trick.play, never
-        # raised on here.
-        self.repairs.log_conflict(
-            event=TilePlayed(player=player, tile=tile),
-            reason=f"no trump candidate is consistent with this play under led suit {trick.led_suit}",
-        )
-        self.repairs.log_irregularity(Irregularity(
-            kind=IrregularityKind.REVOKE,
-            reason=(
-                f"seat {player} played {tile}, not reconcilable with any trump candidate "
-                f"under led suit {trick.led_suit} -- may be a real revoke"
-            ),
-            player=player,
-            needs_confirmation=True,
-            confidence=0.5,
-        ))
-        self.disputed = True
-        return current
-
     def _close_trick(self, trick: Trick) -> None:
-        self._check_trump_contradiction(trick)
         self._record_voids(trick)
         if self.scorer is None:
             # Explicit guard, not an assert: `python -O` strips asserts, and this
@@ -568,62 +412,6 @@ class HandState:
                 continue
             if effective_suit(tile, trump, trick.led_suit) != trick.led_suit:
                 self.voids[player].add(trick.led_suit)
-
-    def _check_trump_contradiction(self, trick: Trick) -> None:
-        """If a player didn't follow the led suit under the current best-guess
-        trump, but we later learn (via full-hand knowledge) they held a follower,
-        that's a contradiction — soft-eliminate that trump guess. Skipped for a
-        seat already flagged with a real revoke on this trick: that's not
-        evidence the trump guess is wrong, it's evidence the human made a
-        mistake, and firing a contradiction on it would poison the tracker.
-
-        Gated on *hard* confirmation, not confirmation in general: a soft
-        (inferred) confirmation is a strong guess, and this is exactly the
-        evidence that should be allowed to overturn it. Without this, the
-        tracker's reopening path would be unreachable dead code. The per-play
-        reconciliation call site (``_reconcile_trump_for_play``) keeps its
-        original blanket is_confirmed gate — see the plan's residual-risk note.
-
-        REACHABILITY, stated plainly so a later reader isn't misled about the
-        coverage this has: ``self.hands is None`` in every production hand today
-        — a HandState only carries ``hands`` when it was *constructed* with a
-        known deal (tests, or a full-knowledge scenario), and the perception
-        that would populate it from real video is Phase 2 and does not exist
-        yet. This method therefore early-returns always in production, which
-        makes it the sole feed for ``TrumpHypothesisTracker``'s reopening path
-        and ``_voids_trump``'s invalidation, and makes both of those test-only
-        for now. That is expected at this phase, not a defect, but it does mean
-        the soft-confirmation machinery is exercised by tests rather than
-        proven by live play. A second, independent constraint compounds it: even
-        *with* known hands, reaching a soft confirmation needs a candidate above
-        CONFIRMED_THRESHOLD, and a search of 84,000 randomized legal playouts
-        (300 deals x 7 possible trumps x 40 play-choice restarts, choosing
-        contradiction-maximizing plays) never got a candidate above 0.75 — see
-        ``TrumpHypothesisTracker.is_soft_confirmed`` for why the weight
-        arithmetic makes that hard.
-
-        Called exactly once per trick, from ``_close_trick``, on a Trick object
-        that is never closed twice — so a given contradiction is evidence that
-        gets counted once, and the count is bounded by the number of tricks.
-        """
-        if self.trump_tracker.hard_confirmed or self.hands is None:
-            return
-        if trick.led_suit is None:
-            return
-        for player, tile in trick.plays:
-            if PlayViolation.REVOKE in trick.violations.get(player, set()):
-                continue
-            if effective_suit(tile, trick.trump, trick.led_suit) != trick.led_suit:
-                # This player didn't follow. If we know their remaining hand and
-                # they in fact hold no follower under trick.trump, no contradiction.
-                # (Hand already had this tile removed by play_tile.)
-                remaining = self.hands.get(player, [])
-                held_follower = any(
-                    effective_suit(t, trick.trump, trick.led_suit) == trick.led_suit
-                    for t in remaining
-                )
-                if held_follower:
-                    self.trump_tracker.observe_contradiction({trick.trump}, confidence=1.0)
 
     # ---- irregular end (concession / redeal) -----------------------------
 
