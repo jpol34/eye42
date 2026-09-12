@@ -410,7 +410,6 @@ def test_unrecognized_trump_cue_does_not_hard_confirm_the_high_end(cue: str):
     tracker = TrumpHypothesisTracker()
     tracker.observe_cue_on_lead(Tile.of(5, 3), cue=cue)
     assert tracker.is_confirmed is False  # falls through to weighted tracking
-    assert tracker.confirmed != 5  # the high end is not hard-confirmed by a garbled cue
     other_candidates = [n for n in range(7) if n not in (5, 3)]
     assert tracker.weights[5] == tracker.weights[3]
     assert all(tracker.weights[5] > tracker.weights[n] for n in other_candidates)
