@@ -9,17 +9,26 @@ committing real game nights to a camera setup.
 This is NOT the real Phase 2 pipeline -- it's a fast, disposable sanity check.
 
 Usage:
-    python tools/crop_rectify.py path/to/test_clip.mp4 [--frame-time SECONDS]
     python tools/crop_rectify.py path/to/test_clip.mp4 --corners x1,y1 x2,y2 x3,y3 x4,y4
+    python tools/crop_rectify.py path/to/test_clip.mp4 --interactive [--frame-time SECONDS]
+
+--corners is the default, dependency-free way to run this: pass the 4 table
+corners directly. --interactive opens a click-to-pick GUI window instead, which
+needs a GUI-capable OpenCV build (opencv-python); this project declares
+opencv-python-headless, which has no GUI support, so --interactive will fail
+with a clear error unless you've separately installed a GUI-capable build.
 
 Corner order (clicked or passed explicitly): top-left, top-right, bottom-right,
 bottom-left of the table surface, in image pixel coordinates.
 
 Output (written next to the input video):
-    <name>_frame.png       the extracted source frame, with clicked corners drawn
+    <name>_frame.png       the extracted source frame, with the corners drawn
     <name>_rectified.png   the top-down rectified table
-    <name>_tile_crop_N.png a few sample crops from the rectified image, so you
-                           can zoom in and check pip legibility directly
+    <name>_tile_crop_N.png a few crops at fixed quadrant points of the rectified
+                           image, for a quick sharpness/focus check -- they land
+                           wherever those quadrants fall, not necessarily on a
+                           tile, so they're not a guaranteed look at any tile's
+                           pips
 """
 
 from __future__ import annotations
@@ -85,8 +94,9 @@ def rectify(frame: np.ndarray, corners: list[tuple[int, int]]) -> np.ndarray:
 def sample_tile_crops(rectified: np.ndarray, out_stem: Path, n: int = 4) -> None:
     h, w = rectified.shape[:2]
     # A handful of spread-out sample points -- not meant to hit real tiles,
-    # just to let you check pixel-level sharpness/pip legibility anywhere on
-    # the rectified surface.
+    # just to let you check pixel-level sharpness anywhere on the rectified
+    # surface. Whether any of them happen to land on a tile (and so show pips)
+    # depends entirely on where tiles were on the table in this frame.
     points = [(w // 4, h // 4), (3 * w // 4, h // 4), (w // 2, h // 2), (w // 2, 3 * h // 4)]
     for i, (cx, cy) in enumerate(points[:n], start=1):
         half = TILE_CROP_SIZE // 2
@@ -100,7 +110,15 @@ def main() -> None:
     parser.add_argument("--frame-time", type=float, default=5.0, help="seconds into the clip to grab (default 5.0)")
     parser.add_argument(
         "--corners", nargs=4, metavar="x,y",
-        help="4 corners as x,y x,y x,y x,y (TL TR BR BL) -- skips interactive picking",
+        help="4 corners as x,y x,y x,y x,y (TL TR BR BL). Default way to supply corners.",
+    )
+    parser.add_argument(
+        "--interactive", action="store_true",
+        help=(
+            "Pick corners by clicking in a GUI window instead of passing --corners. "
+            "Requires a GUI-capable OpenCV build (opencv-python); this project "
+            "declares opencv-python-headless, which has no GUI support."
+        ),
     )
     args = parser.parse_args()
 
@@ -111,8 +129,22 @@ def main() -> None:
 
     if args.corners:
         corners = [tuple(int(v) for v in c.split(",")) for c in args.corners]
+    elif args.interactive:
+        try:
+            corners = pick_corners_interactively(frame)
+        except cv2.error as exc:
+            sys.exit(
+                "error: GUI corner-picking failed -- this project's declared "
+                "dependency is opencv-python-headless, which has no GUI support. "
+                "Install opencv-python (a GUI-capable build) to use --interactive, "
+                "or pass --corners x,y x,y x,y x,y instead.\n"
+                f"(underlying error: {exc})"
+            )
     else:
-        corners = pick_corners_interactively(frame)
+        sys.exit(
+            "error: pass --corners x,y x,y x,y x,y, or --interactive (needs a "
+            "GUI-capable OpenCV build -- see --help)"
+        )
 
     annotated = frame.copy()
     for i, (x, y) in enumerate(corners, start=1):
@@ -126,10 +158,10 @@ def main() -> None:
     cv2.imwrite(f"{stem}_rectified.png", rectified)
     sample_tile_crops(rectified, stem)
 
-    print(f"Wrote {stem}_frame.png, {stem}_rectified.png, and sample tile crops.")
-    print("Check: is the rectified table square/undistorted, and are the tile-crop")
-    print("samples sharp enough to make out pips? If not, adjust camera position,")
-    print("resolution, or lighting before recording real sessions.")
+    print(f"Wrote {stem}_frame.png, {stem}_rectified.png, and sample crops.")
+    print("Check: is the rectified table square/undistorted, and are the crops sharp")
+    print("(if one happens to land on a tile, check pip legibility there)? If not,")
+    print("adjust camera position, resolution, or lighting before recording real sessions.")
 
 
 if __name__ == "__main__":

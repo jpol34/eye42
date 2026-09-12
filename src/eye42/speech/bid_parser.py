@@ -21,6 +21,8 @@ from eye42.engine.bidding import BiddingRound
 # Trump is an int 0-6 only per confirmed house rules -- no "doubles"/"no-trump"
 # vocabulary, so it isn't modeled and shouldn't be added without a house-rule
 # change.
+#
+# Point bids only.
 CLOSED_VOCAB_BIDS = list(range(30, 43))
 CLOSED_VOCAB_TRUMP_CUES = ("low end", "high end")
 
