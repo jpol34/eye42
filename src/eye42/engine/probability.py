@@ -61,6 +61,14 @@ TRICKS_PER_HAND = 7
 # in a row means unsatisfiable, not unlucky.
 MAX_CONSECUTIVE_SAMPLE_FAILURES = 20
 
+# The consecutive-failure guard above only fires on an unbroken run of failures,
+# so a void shape that fails most attempts but succeeds occasionally resets it
+# forever and never trips it -- measured at 9.7s for one default-``samples``
+# call, worst case ~16s, which is exactly the live-display hang the constant
+# above exists to prevent. Bound the *total* failures too, as a fraction of the
+# requested sample count so it scales with the caller's budget.
+MAX_FAILURE_FRACTION = 4  # bail once failures exceed samples // this
+
 
 @dataclass(frozen=True)
 class BidOutcomeEstimate:
@@ -97,6 +105,10 @@ def wilson_interval(successes: int, n: int, z: float = 1.96) -> Tuple[float, flo
     """
     if n <= 0:
         return (0.0, 1.0)
+    # Clamped rather than trusted: a caller passing successes outside [0, n]
+    # otherwise reaches math.sqrt of a negative and raises a ValueError out of a
+    # public, directly-tested helper.
+    successes = min(max(successes, 0), n)
     p = successes / n
     denominator = 1.0 + z * z / n
     centre = (p + z * z / (2 * n)) / denominator
@@ -392,6 +404,25 @@ def _next_leader(hand: HandState) -> int:
     return hand.contract.trump_caller if hand.contract is not None else 0
 
 
+def _has_occluded_trick(hand: HandState) -> bool:
+    """A trick that force-closed *short* -- fewer than 4 real plays -- means
+    tiles physically went unread. The estimator then strands the missed seats'
+    surplus tiles unplayed and under-totals the hand's 42-point budget (56% of
+    sampled playouts in the repro, by up to 15 points), with nothing surfacing
+    it. Treated like ``hand.disputed``: suppress the viewer-only estimate.
+
+    Deliberately narrow. ``Trick.closed_early_for_new_trick`` is NOT included:
+    that marks a trick HandState closed because it saw the next trick's lead, a
+    fully-resolved state with no missing tiles, and suppressing on it would blank
+    the equity bar on an ordinary next-trick lead.
+    """
+    return any(t.force_closed and len(t.plays) < 4 for t in hand.tricks)
+
+
+def _bail_budget(samples: int) -> int:
+    return max(1, samples // MAX_FAILURE_FRACTION)
+
+
 def _hands_fully_known(hand: HandState) -> bool:
     return hand.hands is not None and all(p in hand.hands for p in range(4))
 
@@ -505,7 +536,7 @@ def estimate_bid_probability(
     trump = _trump_or_none(hand)
     if trump is None:
         return None  # confirmation was reopened; nothing to sample against
-    if hand.disputed:
+    if hand.disputed or _has_occluded_trick(hand):
         return None
 
     if _hands_fully_known(hand):
@@ -534,12 +565,18 @@ def estimate_bid_probability(
     used = 0
     defense_total = 0
     consecutive_failures = 0
+    failures = 0
+    failure_budget = _bail_budget(samples)
     for _ in range(samples):
         deal = _try_sample(unseen, hand_sizes, voids, trump, rng)
         if deal is None:
             consecutive_failures += 1
-            if consecutive_failures >= MAX_CONSECUTIVE_SAMPLE_FAILURES:
-                return None  # unsatisfiable, not unlucky -- bail instead of hanging
+            failures += 1
+            if consecutive_failures >= MAX_CONSECUTIVE_SAMPLE_FAILURES or failures > failure_budget:
+                # Unsatisfiable or pathologically slow, not unlucky. Break rather
+                # than `return None`: samples already collected are perfectly good
+                # and a partial estimate beats turning them into "unavailable".
+                break
             continue
         consecutive_failures = 0
         result = _simulate_from_deal(hand, deal)
@@ -572,6 +609,12 @@ def tile_hold_probability(
     Keeps the simple ``Optional[float]`` contract: this is a narrower question
     than "does the bid make it" and has no use for an interval or a point total.
     """
+    if player not in range(4):
+        # API misuse rather than a table event, so ``None``/unavailable (this
+        # function's existing contract) rather than the KeyError the
+        # fully-known-hands branch used to raise on ``hand.hands[player]``.
+        return None
+
     if tile in hand.played_tiles:
         return 1.0 if hand._seen_tiles.get(tile) == player else 0.0
 
@@ -615,12 +658,15 @@ def tile_hold_probability(
     hits = 0
     used = 0
     consecutive_failures = 0
+    failures = 0
+    failure_budget = _bail_budget(samples)
     for _ in range(samples):
         deal = _try_sample(unseen, hand_sizes, voids, trump, rng)
         if deal is None:
             consecutive_failures += 1
-            if consecutive_failures >= MAX_CONSECUTIVE_SAMPLE_FAILURES:
-                return None  # unsatisfiable, not unlucky -- bail instead of hanging
+            failures += 1
+            if consecutive_failures >= MAX_CONSECUTIVE_SAMPLE_FAILURES or failures > failure_budget:
+                break  # same total-failure bound as estimate_bid_probability
             continue
         consecutive_failures = 0
         used += 1

@@ -23,10 +23,20 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Dict, List, Optional
 
-from .bidding import BiddingRound, BidKind, Contract, team_of
+from .bidding import (
+    PLUNGE_MIN_DOUBLES,
+    PLUNGE_MIN_MARKS,
+    SPLASH_MIN_DOUBLES,
+    SPLASH_MIN_MARKS,
+    BiddingError,
+    BiddingRound,
+    BidKind,
+    Contract,
+    team_of,
+)
 from .events import BidMade, IrregularEndSignal, Passed, TilePlayed, TilesDealt, TrumpCueHeard
 from .repair import Irregularity, IrregularityKind, RepairLog
-from .scoring import HandResult, HandScoreTracker
+from .scoring import TRICKS_PER_HAND, HandResult, HandScoreTracker
 from .tiles import Tile, effective_suit
 from .trick import PlayViolation, Trick
 from .trump_inference import TrumpHypothesisTracker
@@ -83,32 +93,84 @@ class HandState:
     # ---- bidding -----------------------------------------------------
 
     def bid(self, player: int, amount: int = 0, marks: int = 0) -> None:
-        self.bidding.record_bid(BidMade(player=player, amount=amount, marks=marks))
-        if self.bidding.is_done and self.bidding.contract.kind == BidKind.MARKS:  # type: ignore[union-attr]
-            self._maybe_upgrade_marks_bid()
-        if self.bidding.is_done:
-            self._start_score_tracker()
+        """Record a bid. Non-strict by design (the same contract every other
+        ``HandState`` event method honours): ``BiddingRound`` is the strict pure-
+        rules layer, but a bid arriving here came from perception/speech and may
+        be out of turn, under the current high bid, or after bidding closed. Such
+        an event is logged and dropped, never raised on -- a Phase-3 speech front
+        end producing noisy bids must not be able to halt a hand."""
+        try:
+            self.bidding.record_bid(BidMade(player=player, amount=amount, marks=marks))
+        except BiddingError as exc:
+            self._log_rejected_bid(player, f"bid (amount={amount}, marks={marks})", exc)
+            return
+        self._on_bidding_closed()
 
     def bid_pass(self, player: int) -> None:
-        self.bidding.record_pass(Passed(player=player))
-        if self.bidding.is_done:
-            self._start_score_tracker()
+        try:
+            self.bidding.record_pass(Passed(player=player))
+        except BiddingError as exc:
+            self._log_rejected_bid(player, "pass", exc)
+            return
+        self._on_bidding_closed()
+
+    def _log_rejected_bid(self, player: int, what: str, exc: BiddingError) -> None:
+        self.repairs.log_irregularity(Irregularity(
+            kind=IrregularityKind.BID_NOT_LEGAL,
+            reason=f"seat {player} {what} rejected by the bidding rules: {exc}",
+            player=player,
+            needs_confirmation=True,
+        ))
+
+    def _on_bidding_closed(self) -> None:
+        """The one place that reacts to bidding having just resolved, shared by
+        ``bid`` and ``bid_pass``.
+
+        Order is load-bearing, not stylistic: the splash/plunge upgrade replaces
+        the (frozen) ``Contract`` object, so it must run *before*
+        ``_start_score_tracker`` captures a reference to it -- otherwise the
+        tracker scores the hand against the un-upgraded contract. Splitting this
+        across the two entry points is what made the upgrade inert for the
+        canonical "marks bid, then three passes" close, which resolves inside
+        ``bid_pass``.
+        """
+        if not self.bidding.is_done:
+            return
+        self._maybe_upgrade_marks_bid()
+        self._start_score_tracker()
 
     def _maybe_upgrade_marks_bid(self) -> None:
         """A plain marks bid is reclassified as splash/plunge once the bidder's
-        doubles are known (only possible when we have the full deal)."""
-        assert self.bidding.contract is not None
-        bidder = self.bidding.contract.bidder
-        if self.hands is None or bidder not in self.hands:
+        doubles are known (only possible when we have the full deal).
+
+        Picks the *highest* kind whose doubles count and marks minimum are both
+        satisfied, and never raises: a 4-doubles hand that bid only 2-3 marks is
+        a perfectly legal SPLASH (it just can't be a PLUNGE), and a 3-doubles
+        1-mark bid is an ordinary MARKS bid with no upgrade available at all.
+        Blindly calling ``upgrade_to_splash_or_plunge`` on the doubles count
+        alone raised ``BiddingError`` on both of those completely ordinary bids,
+        mid-``bid()``, after the contract was set but before the score tracker
+        existed -- leaving a contract with no scorer for the next trick to
+        detonate on.
+        """
+        contract = self.bidding.contract
+        if contract is None or contract.kind != BidKind.MARKS:
             return
-        doubles = sum(1 for t in self.hands[bidder] if t.is_double)
-        if doubles >= 4:
-            self.bidding.upgrade_to_splash_or_plunge(BidKind.PLUNGE)
-        elif doubles >= 3:
-            self.bidding.upgrade_to_splash_or_plunge(BidKind.SPLASH)
+        if self.hands is None or contract.bidder not in self.hands:
+            return
+        doubles = sum(1 for t in self.hands[contract.bidder] if t.is_double)
+        marks = contract.amount
+        if doubles >= PLUNGE_MIN_DOUBLES and marks >= PLUNGE_MIN_MARKS:
+            target = BidKind.PLUNGE
+        elif doubles >= SPLASH_MIN_DOUBLES and marks >= SPLASH_MIN_MARKS:
+            target = BidKind.SPLASH
+        else:
+            return
+        self.bidding.upgrade_to_splash_or_plunge(target)
 
     def _start_score_tracker(self) -> None:
-        assert self.bidding.contract is not None
+        if self.bidding.contract is None:
+            return
         self.scorer = HandScoreTracker(contract=self.bidding.contract)
         if self._orphan_plays:
             pending, self._orphan_plays = self._orphan_plays, []
@@ -201,8 +263,83 @@ class HandState:
             return
         self._play_tile_now(event)
 
+    def _refuse_extra_trick(self, event: TilePlayed) -> None:
+        """A play that would have to open an 8th trick. Seven is the whole hand;
+        anything past it is a spurious/duplicated read, and accepting it silently
+        corrupts the score (a hand capped at 42 computing 65 points, a team that
+        swept every trick reported as ``made=False``).
+
+        Marked ``disputed`` rather than ``misdeal_suspected`` on purpose: a
+        misdeal forces ``classify_irregular_end`` to REDEAL and zeroes the marks
+        for the whole hand off one stray event, which is wildly disproportionate.
+        ``disputed`` suppresses the (viewer-only) probability display and leaves
+        the real score alone.
+        """
+        self.disputed = True
+        self.repairs.log_irregularity(Irregularity(
+            kind=IrregularityKind.TRICK_COUNT_EXCEEDED,
+            reason=(
+                f"seat {event.player} played {event.tile} after all "
+                f"{TRICKS_PER_HAND} tricks were already complete"
+            ),
+            player=event.player,
+            needs_confirmation=True,
+        ))
+        self.repairs.log_conflict(
+            event=event, reason=f"play arrives after {TRICKS_PER_HAND} completed tricks"
+        )
+
+    def _starts_a_new_trick(self, trick: Trick, event: TilePlayed) -> bool:
+        """Does this play from a seat that already played this trick actually
+        mean the *next* trick started while we missed a tile?
+
+        Without this, one occluded play cascades: the seat-already-played case
+        was unconditionally treated as superseded, so an entire following trick
+        (4 real tiles) could vanish into ``superseded_plays``, flipping the
+        hand's score. With it, both discriminators are required, because the
+        naive "≥3 seats in" test alone breaks an ordinary double-read:
+
+        (a) an *identical* tile from that seat is a duplicate CV read of the
+            play we already have, never a new trick; and
+        (b) the incoming seat must be the one entitled to lead next -- i.e. the
+            current trick's winner -- or this is just another stray read.
+        """
+        if trick.is_complete or event.player not in trick.seats_played:
+            return False
+        if any(p == event.player and t == event.tile for p, t in trick.plays):
+            return False  # duplicate read of the same physical tile
+        if len(trick.seats_played) < 3:
+            return False
+        return trick.winner == event.player
+
     def _play_tile_now(self, event: TilePlayed) -> None:
+        if self._current_trick is None and len(self.tricks) >= TRICKS_PER_HAND:
+            self._refuse_extra_trick(event)
+            return
+
         trick = self._ensure_trick_started()
+
+        if self._starts_a_new_trick(trick, event):
+            trick.closed_early_for_new_trick = True
+            # This trick is genuinely short a tile -- the missed seat's play
+            # never arrived -- so its count value is silently lost from the
+            # real score unless this is logged. Not suppressed from the
+            # probability estimator (see _has_occluded_trick); that's a
+            # separate, deliberate trade-off. This is just the audit trail.
+            self.repairs.log_irregularity(Irregularity(
+                kind=IrregularityKind.TRICK_CLOSED_EARLY,
+                reason="a seat's play started the next trick before this one reached 4 plays",
+                player=event.player,
+                needs_confirmation=True,
+            ))
+            self._close_trick(trick)
+            if len(self.tricks) >= TRICKS_PER_HAND:
+                # The early close was a real trick boundary, so it counts toward
+                # the seven -- and if it was the seventh, this play has no trick
+                # left to belong to.
+                self._refuse_extra_trick(event)
+                return
+            trick = self._ensure_trick_started()
 
         if not self.tricks and not trick.plays:
             # First tile of the hand: resolve trump from lead if not already known.
@@ -216,12 +353,38 @@ class HandState:
             self.repairs.log_conflict(
                 event=event, reason=f"tile {event.tile} already played by seat {self._seen_tiles[event.tile]}"
             )
-        self._seen_tiles[event.tile] = event.player
+        # First writer wins. A duplicate/misread tile must not silently erase the
+        # earlier seat's attribution -- that feeds the deal sampler, which would
+        # then happily re-deal a tile lying face-up on the table. The conflict is
+        # already logged one line above; that log is the resolution path, not a
+        # silent overwrite. (Deliberately *not* switching remaining_hand_size /
+        # played_tiles over to _plays_by_seat: that regresses every duplicate-read
+        # hand to sum(sizes) != len(unseen), which blanks both estimators where
+        # they currently still work.)
+        self._seen_tiles.setdefault(event.tile, event.player)
 
         hand = self.hands.get(event.player) if self.hands else None
 
         if trick.led_suit is not None and hand is not None and not self.trump_tracker.is_confirmed:
             trick.trump = self._reconcile_trump_for_play(trick, event.player, event.tile, hand)
+            if trick.trump != self.trump_tracker.best_guess:
+                # The reconcile switched this trick onto a candidate the tracker
+                # doesn't (yet) lead with -- e.g. one it had already disproven at
+                # full confidence. Deliberately logged rather than "fixed" by
+                # biasing the tracker toward the new pick: that reward changes the
+                # exact post-reconcile weights other behaviour is pinned to, and
+                # activates the still-deferred _bias_toward overwrite hazard. The
+                # divergence is what was actually harmful about it going unnoticed.
+                self.repairs.log_irregularity(Irregularity(
+                    kind=IrregularityKind.TRUMP_HYPOTHESIS_DIVERGED,
+                    reason=(
+                        f"trick adjudicated under trump {trick.trump} while the tracker's "
+                        f"best guess is {self.trump_tracker.best_guess}"
+                    ),
+                    player=event.player,
+                    needs_confirmation=True,
+                    confidence=0.5,
+                ))
 
         self._plays_by_seat[event.player] = self._plays_by_seat.get(event.player, 0) + 1
         if self._plays_by_seat[event.player] > 7:
@@ -335,10 +498,20 @@ class HandState:
         return current
 
     def _close_trick(self, trick: Trick) -> None:
-        assert self.scorer is not None
         self._check_trump_contradiction(trick)
         self._record_voids(trick)
-        self.scorer.record_trick(trick)
+        if self.scorer is None:
+            # Explicit guard, not an assert: `python -O` strips asserts, and this
+            # is the line the marks-upgrade crash used to detonate on (contract
+            # set, scorer never built). Log and skip the scoring rather than
+            # halting a hand that is otherwise fine.
+            self.repairs.log_irregularity(Irregularity(
+                kind=IrregularityKind.PLAY_BEFORE_CONTRACT,
+                reason="trick completed before a score tracker existed; not scored",
+                needs_confirmation=True,
+            ))
+        else:
+            self.scorer.record_trick(trick)
         self.tricks.append(trick)
         self._current_trick = None
 
@@ -351,10 +524,18 @@ class HandState:
         engine.probability's deal sampler unsatisfiable). This feeds probability
         estimation (engine.probability), not legality, which is already enforced
         at play time.
+
+        ACCEPTED RESIDUAL RISK (matching this project's existing pattern for
+        gaps of this shape): the voids-half of the late-confirmation problem is
+        fixed below, but ``trick.trump``/``trick.winner``/``scorer.record_trick``
+        still adjudicate such a trick under the stale *guessed* trump. Fixing
+        that half needs the retroactive-reinterpretation machinery that has
+        already been deferred twice; it is not built here.
         """
         if not self.trump_tracker.is_confirmed:
             return
-        assert trick.led_suit is not None
+        if trick.led_suit is None or not trick.plays:
+            return
         trump = self.trump_tracker.confirmed
         if self._voids_trump != trump:
             # Trump changed value since the voids were recorded -- e.g. a soft
@@ -366,6 +547,22 @@ class HandState:
             # every trick of an unconfirmed hand and clear voids constantly.
             self.voids = {p: set() for p in range(4)}
             self._voids_trump = trump
+
+        # ``trick.led_suit`` was frozen when the trick was led, under whatever
+        # trump was the best guess *then*. If trump was confirmed one tile later
+        # (speech lagging video -- the realistic case for this project), the led
+        # tile may count as a different suit entirely under the confirmed trump,
+        # and every "didn't follow" judgement below would be measured against the
+        # wrong suit. The existing `_voids_trump` staleness check cannot catch
+        # this: it compares against the *current* trump, which is exactly the one
+        # being applied incorrectly. Skip this trick's voids rather than record
+        # false ones -- but still stamp `_voids_trump`, or the next trick sees a
+        # mismatch and wipes the (good) voids for no reason.
+        led_tile = trick.plays[0][1]
+        if effective_suit(led_tile, trump, None) != trick.led_suit:
+            self._voids_trump = trump
+            return
+
         for player, tile in trick.plays:
             if PlayViolation.REVOKE in trick.violations.get(player, set()):
                 continue
@@ -411,7 +608,8 @@ class HandState:
         """
         if self.trump_tracker.hard_confirmed or self.hands is None:
             return
-        assert trick.led_suit is not None
+        if trick.led_suit is None:
+            return
         for player, tile in trick.plays:
             if PlayViolation.REVOKE in trick.violations.get(player, set()):
                 continue

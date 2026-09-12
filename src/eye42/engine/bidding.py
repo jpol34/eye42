@@ -14,6 +14,17 @@ from typing import List, Optional
 from .events import BidMade, Passed
 
 
+# House-rule thresholds for the two doubles-based marks bids. Named constants
+# rather than inline literals because two modules now have to agree on them:
+# ``upgrade_to_splash_or_plunge`` enforces the marks floor, and
+# ``HandState._maybe_upgrade_marks_bid`` has to check the very same floor
+# *before* calling it (it must never raise -- see the bug-hunt fix pass).
+SPLASH_MIN_DOUBLES = 3
+SPLASH_MIN_MARKS = 2
+PLUNGE_MIN_DOUBLES = 4
+PLUNGE_MIN_MARKS = 4
+
+
 class BidKind(Enum):
     POINTS = auto()  # 30-41 point bid; contract is reaching that many points
     MARKS = auto()  # a plain marks bid; contract is winning all 7 tricks
@@ -166,7 +177,7 @@ class BiddingRound:
             raise BiddingError("can only upgrade an unresolved marks contract")
         if kind not in (BidKind.SPLASH, BidKind.PLUNGE):
             raise BiddingError("upgrade target must be SPLASH or PLUNGE")
-        min_marks = 2 if kind == BidKind.SPLASH else 4
+        min_marks = SPLASH_MIN_MARKS if kind == BidKind.SPLASH else PLUNGE_MIN_MARKS
         if self.contract.amount < min_marks:
             raise BiddingError(f"{kind.name} requires at least {min_marks} marks")
         self.contract = Contract(bidder=self.contract.bidder, kind=kind, amount=self.contract.amount)

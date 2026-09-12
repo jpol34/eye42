@@ -5,6 +5,7 @@ import time
 
 from eye42.engine.events import TilePlayed, TilesDealt
 from eye42.engine.hand import HandState
+from eye42.engine import probability
 from eye42.engine.probability import (
     _choose_play,
     _rebased_copy,
@@ -543,3 +544,70 @@ def test_mid_trick_copy_bails_when_the_led_suit_cannot_be_rebased():
     trick = _trick_with(6, 0, [(0, Tile.of(6, 5))])
     assert trick.led_suit == 6
     assert _rebased_copy(trick, 5) is None
+
+
+# ---------------------------------------------------------------------------
+# bug-hunt fix pass: sampler failure budget (B2), seat guard (B6), Wilson
+# clamp (B7)
+# ---------------------------------------------------------------------------
+
+def test_wilson_interval_clamps_out_of_range_success_counts():
+    """B7. ``successes`` outside [0, n] reached ``math.sqrt`` of a negative and
+    raised a ValueError out of a public, directly-tested helper."""
+    assert wilson_interval(15, 10) == wilson_interval(10, 10)
+    assert wilson_interval(-3, 10) == wilson_interval(0, 10)
+    low, high = wilson_interval(15, 10)
+    assert 0.0 <= low <= high <= 1.0
+
+
+def test_tile_hold_probability_returns_none_for_an_out_of_range_seat():
+    """B6. ``hand.hands[player]`` on the fully-known-hands branch raised a bare
+    KeyError. This module's contract for "can't answer that" is ``None``."""
+    hand = _trump_led_first_trick_hand()
+    for player in (-1, 4, 99):
+        assert tile_hold_probability(hand, Tile.of(6, 1), player=player) is None
+
+
+def test_total_failure_budget_bails_out_when_failures_are_interleaved():
+    """B2. The consecutive-failure guard resets on every success, so a void
+    shape that fails most attempts but succeeds occasionally never tripped it --
+    measured at 9.7s for one default-``samples`` call, the exact live-display
+    hang that constant exists to prevent. A total-failure bound catches it."""
+    calls = {"n": 0}
+    real = probability._try_sample
+
+    def flaky(*args, **kwargs):
+        calls["n"] += 1
+        # Fail three out of every four attempts, so the consecutive counter is
+        # reset before it can ever reach MAX_CONSECUTIVE_SAMPLE_FAILURES.
+        if calls["n"] % 4:
+            return None
+        return real(*args, **kwargs)
+
+    hand = _trump_led_first_trick_hand()
+    probability._try_sample = flaky
+    try:
+        result = estimate_bid_probability(hand, samples=400)
+    finally:
+        probability._try_sample = real
+
+    assert calls["n"] < 400  # bailed out early instead of grinding to the end
+    # ...and the samples it did collect are still reported, not thrown away.
+    assert result is not None
+    assert 0 < result.samples < 400
+
+
+def test_the_failure_budget_still_returns_none_when_nothing_is_satisfiable():
+    """The partial-result path must not turn a genuinely unsatisfiable state
+    into a fabricated estimate: with no usable samples at all, it is still
+    ``None``."""
+    hand = _trump_led_first_trick_hand()
+    real = probability._try_sample
+    probability._try_sample = lambda *a, **k: None
+    try:
+        assert estimate_bid_probability(hand, samples=400) is None
+        # A non-trump tile, so no void-based analytic short-circuit answers it
+        # first and the question really does reach the sampler.
+        assert tile_hold_probability(hand, Tile.of(5, 4), player=1, samples=400) is None
+    finally:
+        probability._try_sample = real

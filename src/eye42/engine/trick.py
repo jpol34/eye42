@@ -39,6 +39,16 @@ class Trick:
     violations: Dict[int, Set[PlayViolation]] = field(default_factory=dict, init=False)
     superseded_plays: List[Tuple[int, Tile]] = field(default_factory=list, init=False)
     force_closed: bool = field(default=False, init=False)
+    closed_early_for_new_trick: bool = field(default=False, init=False)
+    """Closed by ``HandState`` because the next trick demonstrably started: ≥3
+    distinct seats were already in and the seat entitled to lead next led it.
+
+    Deliberately a *separate* flag from ``force_closed``, not a reuse of it.
+    ``force_closed`` means "we gave up waiting, tiles are probably missing" and
+    suppresses the probability estimator when it fires short; this one means
+    "resolved, we simply saw the boundary" and must not suppress anything. One
+    flag for both would blank the equity display on an ordinary next-trick lead.
+    """
 
     @property
     def led_suit(self) -> Optional[int]:
@@ -50,7 +60,7 @@ class Trick:
 
     @property
     def is_complete(self) -> bool:
-        return len(self.seats_played) == 4 or self.force_closed
+        return len(self.seats_played) == 4 or self.force_closed or self.closed_early_for_new_trick
 
     @property
     def next_player(self) -> Optional[int]:
