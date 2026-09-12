@@ -9,11 +9,12 @@ other players' hands. This module estimates:
   via Monte Carlo — sample many tile deals consistent with known voids and hand
   sizes, play each out with a simple heuristic policy, and take the fraction
   that succeed. The deterministic 0%/100% edge cases (locked-set / already
-  mathematically guaranteed) are short-circuited without sampling. It returns a
-  ``BidOutcomeEstimate`` (probability + Wilson 95% interval + samples actually
-  used + expected final defending-team points), not a bare float: the defense's
-  expected points fall out of the *same* sampling loop for free, and a live
-  display wants the interval to know how much to trust the bar.
+  mathematically guaranteed / hand fully played out) are short-circuited
+  without sampling. It returns a ``BidOutcomeEstimate`` (probability + Wilson
+  95% interval + samples actually used + expected final defending-team
+  points), not a bare float: the defense's expected points fall out of the
+  *same* sampling loop for free, and a live display wants the interval to know
+  how much to trust the bar.
 - ``tile_hold_probability``: P(a specific unseen tile is held by a specific
   player). Two degenerate cases are decided analytically from voids alone (the
   player can't hold the tile → 0.0; exactly one player still can → 1.0);
@@ -76,12 +77,11 @@ class BidOutcomeEstimate:
 
     ``confidence_interval`` is a Wilson score 95% interval around
     ``probability``. Deterministic short-circuits (locked set, already
-    guaranteed, a completed hand, fully-known hands) return a degenerate result:
-    ``samples == 0`` and the interval collapsed onto the point value.
+    guaranteed, a completed hand) return a degenerate result: ``samples == 0``
+    and the interval collapsed onto the point value.
 
-    ``expected_defense_points`` is the defending team's *projected final* points
-    for the completed hand -- an average over the sampled playouts, or the exact
-    figure from the single deterministic playout when hands are fully known. It
+    ``expected_defense_points`` is the defending team's *projected final*
+    points for the completed hand -- an average over the sampled playouts. It
     is ``None`` when that value would require a simulation the code path did not
     perform: the ``is_locked_set`` and already-guaranteed short-circuits decide
     the *win/loss* question by pure arithmetic on the running score and never
@@ -343,8 +343,6 @@ def _simulate_from_deal(
     swept = True  # only relevant for requires_sweep contracts
 
     hands = {p: list(deal.get(p, [])) for p in range(4)}
-    for p, tiles in (hand.hands.items() if hand.hands else []):
-        hands[p] = list(tiles)  # prefer real known-hand data over sampled guesses
 
     def score(trick: Trick) -> bool:
         nonlocal bidding_points, defending_points, swept
@@ -421,10 +419,6 @@ def _has_occluded_trick(hand: HandState) -> bool:
 
 def _bail_budget(samples: int) -> int:
     return max(1, samples // MAX_FAILURE_FRACTION)
-
-
-def _hands_fully_known(hand: HandState) -> bool:
-    return hand.hands is not None and all(p in hand.hands for p in range(4))
 
 
 # ---- determinism -----------------------------------------------------------
@@ -539,16 +533,6 @@ def estimate_bid_probability(
     if hand.disputed or _has_occluded_trick(hand):
         return None
 
-    if _hands_fully_known(hand):
-        # No hidden information left to sample -- the outcome is deterministic
-        # under the playout policy, so a single simulation is the exact answer
-        # (not a probability under uncertainty, just this policy's result).
-        result = _simulate_from_deal(hand, {})
-        if result is None:
-            return None
-        made, defense_points = result
-        return _degenerate(1.0 if made else 0.0, float(defense_points))
-
     if hand.misdeal_suspected:
         return None
 
@@ -610,9 +594,8 @@ def tile_hold_probability(
     than "does the bid make it" and has no use for an interval or a point total.
     """
     if player not in range(4):
-        # API misuse rather than a table event, so ``None``/unavailable (this
-        # function's existing contract) rather than the KeyError the
-        # fully-known-hands branch used to raise on ``hand.hands[player]``.
+        # API misuse rather than a table event, so None/unavailable -- this
+        # function's contract for "can't answer that" -- rather than raising.
         return None
 
     if tile in hand.played_tiles:
@@ -621,9 +604,6 @@ def tile_hold_probability(
     trump = _trump_or_none(hand)
     if hand.disputed:
         return None
-
-    if _hands_fully_known(hand):
-        return 1.0 if tile in hand.hands[player] else 0.0  # type: ignore[index]
 
     # Both remaining guards sit *after* the exact-answer branches above: an
     # answer computable without sampling is never suppressed by a
