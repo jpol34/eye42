@@ -8,9 +8,7 @@ bid-rotation plausibility x ASR confidence (NOT raw vocab-match acceptance,
 which the plan's re-review flagged as too permissive against ordinary table
 talk) -> turn-order speaker attribution, cross-checked against the CV-observed
 trick leader (splash/plunge means the leader is the bidder's PARTNER, which is
-positive evidence for that bid type, not a mismatch to flag). That cross-check
-depends on the engine being able to infer splash/plunge from who leads the
-first trick under a MARKS contract, which does not exist yet.
+positive evidence for that bid type, not a mismatch to flag).
 """
 
 from __future__ import annotations
@@ -24,9 +22,7 @@ from eye42.engine.bidding import BiddingRound
 # vocabulary, so it isn't modeled and shouldn't be added without a house-rule
 # change.
 #
-# Point bids only -- mark bids ("two marks", "four marks", BidKind.MARKS in
-# engine.bidding) have no vocabulary entry here and can't be represented yet,
-# even though the engine fully supports them.
+# Point bids only.
 CLOSED_VOCAB_BIDS = list(range(30, 43))
 CLOSED_VOCAB_TRUMP_CUES = ("low end", "high end")
 
@@ -35,9 +31,6 @@ CLOSED_VOCAB_TRUMP_CUES = ("low end", "high end")
 class Utterance:
     text: str
     confidence: float  # ASR confidence, 0-1
-    # Seconds, not the frame_index perception.tile_detect uses -- no shared
-    # clock convention with that module exists yet, so a tile play and a
-    # spoken bid can't be ordered against each other across modalities.
     start_time: float
     end_time: float
 
@@ -85,10 +78,6 @@ class TrumpCueResolver:
     """Resolves a weak 'low end'/'high end' verbal cue against the CV-observed
     led tile, feeding eye42.engine.trump_inference.TrumpHypothesisTracker rather
     than setting trump directly -- a cue alone (without the tile) proves nothing.
-
-    Today, HandState (engine.hand) only consults a pending cue on the very
-    first lead of the whole hand, not on tricks 2-7 -- a cue resolved here for
-    a later trick has nowhere to be consulted yet.
     """
 
     def resolve(self, cue_text: str, speaker_guess: int) -> Optional[str]:

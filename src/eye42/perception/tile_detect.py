@@ -27,9 +27,6 @@ class TileObservation:
     tile: Tile
     confidence: float
     position: Tuple[float, float]  # rectified-plane coordinates
-    # No shared clock convention with speech.bid_parser (which timestamps in
-    # start_time/end_time seconds) exists yet -- ordering a tile play against a
-    # spoken bid across modalities isn't possible until one is defined.
     frame_index: int
 
 
