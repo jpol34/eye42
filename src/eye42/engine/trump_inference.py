@@ -127,9 +127,11 @@ class TrumpHypothesisTracker:
                 self.weights = {n: 1.0 / 7 for n in range(7)}
             return
 
-        self._last_weights_before_empty = dict(self.weights)
         for n in self.weights:
             self.weights[n] /= total
+        # Snapshot *after* normalizing -- the fallback above should reopen a
+        # real, normalized prior state, not a pre-normalization intermediate.
+        self._last_weights_before_empty = dict(self.weights)
 
         if max(self.weights.values()) >= CONFIRMED_THRESHOLD:
             self.confirm(max(self.weights, key=lambda n: self.weights[n]))
