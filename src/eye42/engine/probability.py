@@ -509,6 +509,14 @@ def estimate_bid_probability(
     if hand.contract is None or hand.scorer is None:
         raise ValueError("bidding must be resolved and scoring started first")
 
+    # A force-closed-short trick corrupts is_locked_set/bidding_team_points
+    # themselves (see HandState.scoring_disputed), so unlike the general
+    # disputed/occlusion guard further down, this must run before the exact
+    # short-circuits below rather than after them -- those short-circuits
+    # would otherwise answer confidently from the same broken arithmetic.
+    if hand.scoring_disputed:
+        return None
+
     # Exact answers first: these are pure arithmetic on the recorded score and
     # must never be suppressed by the sampling-safety guards below.
     # These two decide the win/loss question outright but play out nothing, so

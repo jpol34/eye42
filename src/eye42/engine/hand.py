@@ -64,7 +64,8 @@ class HandState:
     deal: Optional[TilesDealt] = field(default=None, init=False)
     misdeal_suspected: bool = field(default=False, init=False)
     _voids_trump: Optional[int] = field(default=None, init=False)  # trump the voids were recorded under
-    disputed: bool = field(default=False, init=False)
+    disputed: bool = field(default=False, init=False)  # suppresses the viewer-only probability estimate
+    scoring_disputed: bool = field(default=False, init=False)  # the real score/marks can't be trusted either
     _orphan_plays: List[TilePlayed] = field(default_factory=list, init=False)
     _plays_by_seat: Dict[int, int] = field(default_factory=dict, init=False)
 
@@ -329,11 +330,15 @@ class HandState:
                 # (see Trick.force_closed), so some seats' tiles were never
                 # observed here -- the count value this trick contributes to the
                 # running score reflects only the tiles perception actually
-                # caught, not zero. The hand's remaining-points arithmetic
-                # (HandScoreTracker.is_locked_set) has no way to tell "accounted
-                # for" from "missing," so it can no longer be trusted for this
-                # hand.
+                # caught, not zero, and whichever team won it may be missing
+                # count they were rightfully owed. HandScoreTracker's arithmetic
+                # (is_locked_set, bidding_team_points) has no way to tell
+                # "accounted for" from "missing," so the real score -- not just
+                # the viewer-only estimate -- can no longer be trusted for this
+                # hand; final_result() checks scoring_disputed and withholds
+                # marks rather than award them off corrupted arithmetic.
                 self.disputed = True
+                self.scoring_disputed = True
             self._close_trick(trick)
 
     def _log_play_violations(self, event: TilePlayed, trick: Trick, violations: set) -> None:
@@ -459,6 +464,20 @@ class HandState:
         if self.scorer is None:
             raise HandError("bidding never resolved to a contract")
         if self.outcome_kind == HandOutcomeKind.REDEAL:
+            return HandResult(
+                bidding_team=team_of(self.contract.bidder),  # type: ignore[union-attr]
+                made=False,
+                marks_awarded_to=-1,
+                marks=0,
+                bidding_team_points=self.scorer.bidding_team_points,
+            )
+        if self.scoring_disputed:
+            # is_locked_set/bidding_team_points can't distinguish a trick's
+            # count as "zero" from "never observed" once one force-closed
+            # short, so neither made-or-not nor the point total can be trusted
+            # -- withhold marks (same -1 sentinel as REDEAL, which game.py
+            # already treats as "award nothing") rather than resolve a made/
+            # missed question from corrupted arithmetic.
             return HandResult(
                 bidding_team=team_of(self.contract.bidder),  # type: ignore[union-attr]
                 made=False,

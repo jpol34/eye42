@@ -366,6 +366,54 @@ def test_a_force_closed_short_trick_still_records_its_winner_and_count():
     assert hand.scorer.bidding_team_points == 1 + 10  # seat 0 bid; trick + count
 
 
+def test_scoring_disputed_suppresses_even_the_exact_answer_short_circuits():
+    """estimate_bid_probability answers is_locked_set/points-already-met
+    analytically, without sampling, before its general disputed/occlusion
+    guard runs -- so a force-closed-short trick (which corrupts that same
+    arithmetic, not just the sampler) must be caught earlier, via
+    scoring_disputed, or these exact short-circuits would confidently answer
+    from the very numbers that can no longer be trusted."""
+    hand = HandState(dealer=3)
+    hand.bid(0, 42)  # needs every point in the hand; losing any trick locks it
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)
+    hand.call_trump(0, trump=6)
+
+    hand.play_tile(TilePlayed(player=0, tile=Tile.of(0, 0)))
+    hand.play_tile(TilePlayed(player=1, tile=Tile.of(6, 6)))  # trump, wins for the defense
+    # Seat 2 never appears; 0 and 3 get double-read until the trick force-closes.
+    hand.play_tile(TilePlayed(player=0, tile=Tile.of(1, 0)))
+    hand.play_tile(TilePlayed(player=0, tile=Tile.of(2, 2)))
+    hand.play_tile(TilePlayed(player=3, tile=Tile.of(3, 3)))
+    hand.play_tile(TilePlayed(player=3, tile=Tile.of(4, 4)))
+
+    assert hand.scoring_disputed is True
+    assert hand.scorer.is_locked_set is True  # would trigger the exact 0.0 short-circuit
+    assert estimate_bid_probability(hand, samples=40) is None
+
+
+def test_scoring_disputed_hand_withholds_marks_at_final_result():
+    """The real score/marks determination -- not just the viewer estimate --
+    must not be computed from is_locked_set/bidding_team_points once a trick
+    force-closed short. final_result() withholds marks (the same -1 sentinel
+    used for a REDEAL, which game.py already treats as "award nothing") rather
+    than resolve a made/missed question from corrupted arithmetic."""
+    hand = _contracted_hand()
+    hand.play_tile(TilePlayed(player=0, tile=Tile.of(6, 6)))
+    hand.play_tile(TilePlayed(player=1, tile=Tile.of(5, 5)))
+    # Seat 2 never appears; 1 and 3 get double-read until the trick force-closes.
+    hand.play_tile(TilePlayed(player=1, tile=Tile.of(4, 4)))
+    hand.play_tile(TilePlayed(player=1, tile=Tile.of(3, 0)))
+    hand.play_tile(TilePlayed(player=3, tile=Tile.of(1, 0)))
+    hand.play_tile(TilePlayed(player=3, tile=Tile.of(2, 2)))
+
+    assert hand.scoring_disputed is True
+    result = hand.final_result()
+    assert result.marks_awarded_to not in (0, 1)
+    assert result.marks == 0
+
+
 def test_an_f3_early_close_is_not_mistaken_for_an_eighth_trick():
     """The F3/F4 interaction. An early close is a *real* trick boundary, so it
     counts toward the seven -- but a hand with one occluded tile still has
