@@ -594,8 +594,8 @@ def tile_hold_probability(
     than "does the bid make it" and has no use for an interval or a point total.
     """
     if player not in range(4):
-        # API misuse rather than a table event, so None/unavailable (this
-        # function's existing contract) rather than an IndexError.
+        # API misuse rather than a table event, so None/unavailable -- this
+        # function's contract for "can't answer that" -- rather than raising.
         return None
 
     if tile in hand.played_tiles:

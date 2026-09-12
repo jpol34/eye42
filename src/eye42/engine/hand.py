@@ -10,7 +10,7 @@ Repairs to noisy tile reads are logged with provenance rather than applied in
 place, so a later-proven-wrong correction can be rolled back.
 
 A second, distinct class of problem lives here too: real human rule-breaks (an
-out-of-turn play, a genuine revoke, a wrong-seat trump call, a bad deal). Per the
+out-of-turn play, a wrong-seat trump call, a bad deal). Per the
 project's hard constraint, none of these may ever raise and halt processing of a
 hand -- a physically-observed event is ground truth, and every irregularity is
 logged (``RepairLog``/``Irregularity``) and reconciled as gracefully as today's
@@ -382,10 +382,10 @@ class HandState:
             return
         trump = self.trump_tracker.confirmed
         if self._voids_trump != trump:
-            # Trump changed value since the voids were recorded -- e.g. a soft
-            # (inferred) confirmation was reopened by a later contradiction and
-            # then re-confirmed elsewhere. Everything recorded under the
-            # rejected hypothesis is a *false* constraint for the deal sampler,
+            # Trump changed value since the voids were recorded -- e.g. the
+            # trump-caller called trump a second time with a different value.
+            # Everything recorded under the rejected hypothesis is a *false*
+            # constraint for the deal sampler,
             # so drop it rather than carry it forward. Placed after the
             # is_confirmed gate above on purpose: before it, this would fire on
             # every trick of an unconfirmed hand and clear voids constantly.
