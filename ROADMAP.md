@@ -56,6 +56,25 @@ what was done, when, and why — lives in the pr history for the gh repo)
   specific, reproducible failure mode that actually shows up in real
   validation footage — not speculatively.
 
+## Implementation notes for not-yet-built phases
+
+- Phase 2's rectification/localization: OpenCV. Phase 3's STT: local Whisper
+  (`faster-whisper`), no cloud API, so recordings never leave the device.
+  Phase 2/4 storage: flat JSON per hand/game (SQLite later only if
+  cross-game analytics are wanted). Phase 4's server: plain HTML/JS or a
+  tiny local Flask/FastAPI process.
+- Numeric acceptance targets once these phases exist, not just "looks
+  right": per-tile identity accuracy ≥98% over ≥200 observed tiles (before
+  any repair/reconciliation), exact final-score match on ≥3 full real hands,
+  ≤1 human confirmation prompt per hand on average. Per-phase validation:
+  Phase 2 against 2-3 recorded hands (one set, one informal ending) checking
+  the accuracy target, no duplicate/missed sweep events, and correct
+  concession-vs-redeal routing; Phase 3 against hands with real background
+  chatter (and a splash/plunge hand if captured), checking bid/trump/leader
+  attribution and that bid-rotation-plausibility scoring suppresses
+  table-talk false positives; Phase 4 by playing one full live game and
+  comparing the dashboard's final tally to the players' manual one.
+
 ## Known gaps / ideas under consideration
 
 - **Splash/plunge is currently unreachable through live bidding.** The
