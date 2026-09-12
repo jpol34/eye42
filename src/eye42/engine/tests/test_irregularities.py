@@ -313,6 +313,9 @@ def test_an_f3_early_close_does_not_suppress_the_estimate():
 
     assert _has_occluded_trick(hand) is False
     assert estimate_bid_probability(hand, samples=40) is not None
+    # The other kind of early close is fully resolved -- nothing is missing --
+    # so it must not be mistaken for the disputed, tiles-genuinely-unread case.
+    assert hand.disputed is False
 
 
 def test_a_force_closed_short_trick_does_suppress_the_estimate():
@@ -333,6 +336,34 @@ def test_a_force_closed_short_trick_does_suppress_the_estimate():
     assert len(hand.tricks[0].plays) < 4
     assert _has_occluded_trick(hand) is True
     assert estimate_bid_probability(hand, samples=40) is None
+    # The hand's remaining-points arithmetic can no longer tell "accounted for"
+    # from "missing" once a trick force-closed short, so the hand is disputed
+    # on top of (separately from) the estimator's own occlusion check.
+    assert hand.disputed is True
+
+
+def test_a_force_closed_short_trick_still_records_its_winner_and_count():
+    """The disputed flag marks the hand's remaining-points bookkeeping as
+    untrustworthy; it must not erase the trick that actually happened. The
+    known tiles' identities and count are still real observed facts, kept in
+    both ``hand.tricks`` and the scorer so a future reconciliation mechanism
+    (not built here) would still have them to work with."""
+    hand = _contracted_hand()
+    hand.play_tile(TilePlayed(player=0, tile=Tile.of(6, 6)))  # trump, wins the trick
+    hand.play_tile(TilePlayed(player=1, tile=Tile.of(5, 5)))  # 10-count
+    # Seat 2 never appears; 1 and 3 get double-read until the trick force-closes.
+    hand.play_tile(TilePlayed(player=1, tile=Tile.of(4, 4)))
+    hand.play_tile(TilePlayed(player=1, tile=Tile.of(3, 0)))
+    hand.play_tile(TilePlayed(player=3, tile=Tile.of(1, 0)))
+    hand.play_tile(TilePlayed(player=3, tile=Tile.of(2, 2)))
+
+    assert hand.disputed is True
+    assert len(hand.tricks) == 1
+    trick = hand.tricks[0]
+    assert trick.winner == 0
+    assert trick.count_value == 10  # the 5-5 seen before the trick force-closed
+    assert trick in hand.scorer.completed_tricks
+    assert hand.scorer.bidding_team_points == 1 + 10  # seat 0 bid; trick + count
 
 
 def test_an_f3_early_close_is_not_mistaken_for_an_eighth_trick():
