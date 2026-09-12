@@ -58,6 +58,7 @@ class HandState:
     voids: Dict[int, set] = field(default_factory=lambda: {p: set() for p in range(4)}, init=False)
     deal: Optional[TilesDealt] = field(default=None, init=False)
     misdeal_suspected: bool = field(default=False, init=False)
+    _voids_trump: Optional[int] = field(default=None, init=False)  # trump the voids were recorded under
     disputed: bool = field(default=False, init=False)
     _orphan_plays: List[TilePlayed] = field(default_factory=list, init=False)
     _plays_by_seat: Dict[int, int] = field(default_factory=dict, init=False)
@@ -355,6 +356,16 @@ class HandState:
             return
         assert trick.led_suit is not None
         trump = self.trump_tracker.confirmed
+        if self._voids_trump != trump:
+            # Trump changed value since the voids were recorded -- e.g. a soft
+            # (inferred) confirmation was reopened by a later contradiction and
+            # then re-confirmed elsewhere. Everything recorded under the
+            # rejected hypothesis is a *false* constraint for the deal sampler,
+            # so drop it rather than carry it forward. Placed after the
+            # is_confirmed gate above on purpose: before it, this would fire on
+            # every trick of an unconfirmed hand and clear voids constantly.
+            self.voids = {p: set() for p in range(4)}
+            self._voids_trump = trump
         for player, tile in trick.plays:
             if PlayViolation.REVOKE in trick.violations.get(player, set()):
                 continue
@@ -368,8 +379,37 @@ class HandState:
         seat already flagged with a real revoke on this trick: that's not
         evidence the trump guess is wrong, it's evidence the human made a
         mistake, and firing a contradiction on it would poison the tracker.
+
+        Gated on *hard* confirmation, not confirmation in general: a soft
+        (inferred) confirmation is a strong guess, and this is exactly the
+        evidence that should be allowed to overturn it. Without this, the
+        tracker's reopening path would be unreachable dead code. The per-play
+        reconciliation call site (``_reconcile_trump_for_play``) keeps its
+        original blanket is_confirmed gate — see the plan's residual-risk note.
+
+        REACHABILITY, stated plainly so a later reader isn't misled about the
+        coverage this has: ``self.hands is None`` in every production hand today
+        — a HandState only carries ``hands`` when it was *constructed* with a
+        known deal (tests, or a full-knowledge scenario), and the perception
+        that would populate it from real video is Phase 2 and does not exist
+        yet. This method therefore early-returns always in production, which
+        makes it the sole feed for ``TrumpHypothesisTracker``'s reopening path
+        and ``_voids_trump``'s invalidation, and makes both of those test-only
+        for now. That is expected at this phase, not a defect, but it does mean
+        the soft-confirmation machinery is exercised by tests rather than
+        proven by live play. A second, independent constraint compounds it: even
+        *with* known hands, reaching a soft confirmation needs a candidate above
+        CONFIRMED_THRESHOLD, and a search of 84,000 randomized legal playouts
+        (300 deals x 7 possible trumps x 40 play-choice restarts, choosing
+        contradiction-maximizing plays) never got a candidate above 0.75 — see
+        ``TrumpHypothesisTracker.is_soft_confirmed`` for why the weight
+        arithmetic makes that hard.
+
+        Called exactly once per trick, from ``_close_trick``, on a Trick object
+        that is never closed twice — so a given contradiction is evidence that
+        gets counted once, and the count is bounded by the number of tricks.
         """
-        if self.trump_tracker.is_confirmed or self.hands is None:
+        if self.trump_tracker.hard_confirmed or self.hands is None:
             return
         assert trick.led_suit is not None
         for player, tile in trick.plays:
