@@ -137,9 +137,13 @@ what was done, when, and why — lives in the pr history for the gh repo)
     `observe_contradiction`'s weight-reopening fallback
     (`_last_weights_before_empty`) — when a candidate's weight collapses and
     later gets restored from a snapshot, its void state needs a defined rule
-    for whether it restores alongside the weight or resets. Needs its own
-    design pass and plan-critic review before building, not a bundled
-    addition to anything else.
+    for whether it restores alongside the weight or resets. Even though
+    this doesn't strictly need a camera to test (synthetic event sequences
+    exercise it fine), hold off until real footage exists anyway — reasoning
+    about a live state-machine change here is genuinely hard to validate
+    without real hands to check it against, same as the rest of this entry.
+    Needs its own design pass and plan-critic review before building, not a
+    bundled addition to anything else.
 - **Recovering a force-closed trick's missing tiles.** When a trick
   force-closes short (fewer than 4 plays observed), the hand is marked
   `disputed` and its count is not trusted for the rest of the hand's
