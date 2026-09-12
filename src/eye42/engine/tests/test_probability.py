@@ -519,16 +519,14 @@ def test_total_failure_budget_bails_out_when_failures_are_interleaved():
     hand = _trump_led_first_trick_hand()
     probability._try_sample = flaky
     try:
-        start = time.perf_counter()
         result = estimate_bid_probability(hand, samples=400)
-        elapsed = time.perf_counter() - start
     finally:
         probability._try_sample = real
 
-    # Bailed out early instead of grinding through all 400 requested samples
-    # -- this used to take ~9.7s; the total-failure budget keeps it well under
-    # a second.
-    assert elapsed < 5.0
+    # Bailed out after the total-failure budget rather than attempting all 400
+    # requested samples -- a wall-clock bound here would be flaky under load,
+    # so this counts attempts through the test's own stand-in instead.
+    assert flaky.calls < 400
     # ...and the samples it did collect are still reported, not thrown away.
     assert result is not None
     assert 0 < result.samples < 400

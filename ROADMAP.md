@@ -111,10 +111,10 @@ what was done, when, and why — lives in the pr history for the gh repo)
 - **Speech bid vocabulary covers point bids only** — mark bids ("two marks,"
   "four marks," `BidKind.MARKS`) have no vocabulary entry in
   `speech.bid_parser` yet, even though the engine fully supports them.
-- **`perception.tile_detect`'s `TileIdentityClassifier.classify` returns
-  ranked candidates**, not a single best guess — matches
-  `TrumpHypothesisTracker`'s weighted-candidate convention. Already updated
-  to this shape; still needs a real implementation.
+- **`perception.tile_detect`'s `TileIdentityClassifier.classify` needs a real
+  implementation** — its interface already returns ranked candidates, not a
+  single best guess, matching `TrumpHypothesisTracker`'s weighted-candidate
+  convention.
 - **Self-caught in-the-moment retraction** (a `PlayRetracted` event) and
   rolling back trump-inference/void state for it — today a swapped-in tile
   just gets logged as its own irregularity and the hand keeps going, which
