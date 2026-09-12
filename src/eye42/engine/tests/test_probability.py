@@ -573,25 +573,32 @@ def test_total_failure_budget_bails_out_when_failures_are_interleaved():
     shape that fails most attempts but succeeds occasionally never tripped it --
     measured at 9.7s for one default-``samples`` call, the exact live-display
     hang that constant exists to prevent. A total-failure bound catches it."""
-    calls = {"n": 0}
     real = probability._try_sample
 
     def flaky(*args, **kwargs):
-        calls["n"] += 1
-        # Fail three out of every four attempts, so the consecutive counter is
-        # reset before it can ever reach MAX_CONSECUTIVE_SAMPLE_FAILURES.
-        if calls["n"] % 4:
+        # Fail three out of every four attempts, so the consecutive-failure
+        # counter is reset before it can ever reach
+        # MAX_CONSECUTIVE_SAMPLE_FAILURES.
+        flaky.calls += 1
+        if flaky.calls % 4:
             return None
         return real(*args, **kwargs)
+
+    flaky.calls = 0
 
     hand = _trump_led_first_trick_hand()
     probability._try_sample = flaky
     try:
+        start = time.perf_counter()
         result = estimate_bid_probability(hand, samples=400)
+        elapsed = time.perf_counter() - start
     finally:
         probability._try_sample = real
 
-    assert calls["n"] < 400  # bailed out early instead of grinding to the end
+    # Bailed out early instead of grinding through all 400 requested samples
+    # -- this used to take ~9.7s; the total-failure budget keeps it well under
+    # a second.
+    assert elapsed < 5.0
     # ...and the samples it did collect are still reported, not thrown away.
     assert result is not None
     assert 0 < result.samples < 400
