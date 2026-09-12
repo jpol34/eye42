@@ -24,6 +24,7 @@ from eye42.engine.bidding import BiddingError
 from eye42.engine.events import IrregularEndSignal, TilePlayed, TilesDealt
 from eye42.engine.game import GameState
 from eye42.engine.hand import HandError, HandState
+from eye42.engine.probability import estimate_bid_probability, tile_hold_probability
 from eye42.engine.tiles import full_set
 
 SEEDS = [0, 1, 2, 3, 7, 42, 1337, 99991]
@@ -84,12 +85,30 @@ def _run_sequence(hand: HandState, events) -> None:
             hand.record_deal(TilesDealt(dealer=hand.dealer, counts=counts))
 
 
+def _exercise_probability(hand: HandState, rng: random.Random) -> None:
+    """Drag the probability engine over whatever mess the fuzz left behind.
+
+    Gated the same way this file already handles BiddingRound's strict contract:
+    the estimators deliberately raise if asked before a contract/trump ever
+    existed (API misuse, not a table event), so skip those. Everything past that
+    gate must return a value or ``None`` -- never raise. Correctness is not
+    asserted here; only that this crash surface stays closed.
+    """
+    if hand.contract is None or hand.scorer is None:
+        return
+    if not hand.trump_tracker.ever_confirmed:
+        return
+    estimate_bid_probability(hand, samples=5)
+    tile_hold_probability(hand, rng.choice(ALL_TILES), player=rng.randrange(4), samples=5)
+
+
 @pytest.mark.parametrize("seed", SEEDS)
 def test_no_hand_event_sequence_raises(seed: int):
     rng = random.Random(seed)
     hand = HandState(dealer=rng.randrange(4))
     events = _random_event_sequence(rng, length=60)
     _run_sequence(hand, events)  # the assertion is simply that this returns
+    _exercise_probability(hand, rng)
 
 
 @pytest.mark.parametrize("seed", SEEDS)
@@ -103,6 +122,7 @@ def test_no_hand_event_sequence_raises_with_known_hands(seed: int):
     hand = HandState(dealer=rng.randrange(4), hands=hands)
     events = _random_event_sequence(rng, length=60)
     _run_sequence(hand, events)
+    _exercise_probability(hand, rng)
 
 
 @pytest.mark.parametrize("seed", SEEDS)
@@ -114,6 +134,7 @@ def test_no_game_sequence_raises(seed: int):
         hand = game.new_hand()
         events = _random_event_sequence(rng, length=20)
         _run_sequence(hand, events)
+        _exercise_probability(hand, rng)
         hand.classify_irregular_end(IrregularEndSignal(tricks_played_so_far=len(hand.tricks)))
         game.record_hand(hand)
         game.observe_next_dealer(rng.randrange(4))

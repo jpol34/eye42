@@ -25,11 +25,35 @@ LOW_CONFIDENCE_MARGIN = 0.6  # below this, a tile read is too shaky to eliminate
 class TrumpHypothesisTracker:
     weights: Dict[int, float] = field(default_factory=lambda: {n: 1.0 / 7 for n in range(7)})
     confirmed: Optional[int] = None
+    hard_confirmed: bool = field(default=False, init=False)
+    ever_confirmed: bool = field(default=False, init=False)
     _last_weights_before_empty: Optional[Dict[int, float]] = field(default=None, init=False)
 
     @property
     def is_confirmed(self) -> bool:
         return self.confirmed is not None
+
+    @property
+    def is_soft_confirmed(self) -> bool:
+        """Confirmed by *inference* (weight crossing the threshold) rather than
+        by an explicit call or a cue resolved against a known led tile. A soft
+        confirmation is a strong guess, not a fact, and stays reopenable.
+
+        Not reached in practice yet, and worth knowing why before relying on it:
+        the only weight-*raising* mechanism here is renormalization after other
+        candidates are penalized, and ``observe_contradiction``'s callers in
+        ``engine.hand`` only ever disprove the *current* best guess — so the
+        leading candidate always moves down, and a candidate can only clear
+        CONFIRMED_THRESHOLD by being close to the last one standing. The cue
+        priors top out at 0.85 (``observe_cue_on_lead``'s led-double bias),
+        below the 0.9 threshold, so a soft confirmation needs roughly six
+        distinct candidates knocked out within one hand. Compounding that, the
+        sole feed (``HandState._check_trump_contradiction``) is itself inert
+        without known hands — see its docstring. Kept because Phase 2 perception
+        is what closes both gaps; documented so nobody reads this as
+        live-proven behavior.
+        """
+        return self.confirmed is not None and not self.hard_confirmed
 
     @property
     def best_guess(self) -> int:
@@ -49,9 +73,31 @@ class TrumpHypothesisTracker:
 
     def confirm(self, trump: int) -> None:
         """A hard confirmation: an explicit verbal call, or a weak cue resolved
-        against a known led tile. Collapses the hypothesis set immediately."""
+        against a known led tile. Collapses the hypothesis set immediately and
+        is permanent — no later evidence reopens it."""
         self.confirmed = trump
+        self.hard_confirmed = True
+        self.ever_confirmed = True
         self.weights = {n: (1.0 if n == trump else 0.0) for n in range(7)}
+
+    def _soft_confirm(self, trump: int) -> None:
+        """An *inferred* confirmation: weighted evidence crossed the threshold.
+
+        Deliberately does NOT collapse the weights to one-hot the way
+        ``confirm`` does. The distribution is the only record of how we got
+        here, and leaving it intact means reopening is just clearing the flag —
+        there is no prior state to reconstruct and no restore path to get wrong.
+        """
+        self.confirmed = trump
+        self.hard_confirmed = False
+        self.ever_confirmed = True
+
+    def reopen(self) -> None:
+        """Undo a soft confirmation and resume weighted tracking. A no-op on a
+        hard confirmation."""
+        if self.hard_confirmed:
+            return
+        self.confirmed = None
 
     def observe_cue_on_lead(self, led_tile: Tile, cue: Optional[str]) -> None:
         """Update candidates from how the first trick was led, when no explicit
@@ -104,9 +150,41 @@ class TrumpHypothesisTracker:
         (played off a suit they're now known to still hold) — soft-eliminate
         those candidates, gated on confidence so a single shaky tile read can't
         knock out the truth.
+
+        A *hard* confirmation is immune: an explicit call is a fact, and a
+        contradiction against it means something else is wrong (a genuine
+        revoke, a misread tile), not that trump changed.
+
+        A *soft* (inferred) confirmation is reopenable, but only by a
+        full-confidence contradiction against the very candidate that was
+        confirmed. Anything weaker is ignored exactly as before — the whole
+        point of the confidence gate is that a shaky read can't undo an
+        accumulated weight of evidence.
+
+        A reopen can, in principle, be followed by an immediate re-confirmation
+        of the *same* value by the threshold check at the bottom of this method.
+        That is deliberate and correct: the hypothesis was challenged, the
+        penalty was applied, and it still leads the renormalized distribution by
+        a wide margin — surviving contrary evidence is what a Bayesian update
+        looks like, not a swallowed reopen. It is also tightly bounded. For the
+        singleton ``disproven`` that ``engine.hand`` always passes, the
+        confirmed candidate's post-penalty share is ``0.05w / (0.05w + 1 - w)``,
+        which only reaches CONFIRMED_THRESHOLD for ``w >= ~0.9945`` — every
+        weaker confirmation genuinely reopens. (An exact no-op needs
+        ``disproven`` to cover *every* candidate, so the penalty cancels under
+        renormalization; no caller does that.) And it cannot loop: the sole
+        caller path fires once per closed trick on a trick that is never closed
+        twice, so the same evidence is never counted again, and each successive
+        contradiction drives the value down much faster than it recovers.
         """
-        if self.confirmed is not None or not disproven:
+        if not disproven:
             return
+        if self.hard_confirmed:
+            return
+        if self.confirmed is not None:
+            if confidence < 1.0 or self.confirmed not in disproven:
+                return
+            self.reopen()
         if confidence < LOW_CONFIDENCE_MARGIN:
             # Don't hard-eliminate on a low-margin read; just nudge weight down.
             penalty = 0.5
@@ -134,4 +212,4 @@ class TrumpHypothesisTracker:
         self._last_weights_before_empty = dict(self.weights)
 
         if max(self.weights.values()) >= CONFIRMED_THRESHOLD:
-            self.confirm(max(self.weights, key=lambda n: self.weights[n]))
+            self._soft_confirm(max(self.weights, key=lambda n: self.weights[n]))
