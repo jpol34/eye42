@@ -18,6 +18,13 @@ dependencies = []
 dev = [
     "pytest>=7.0",
 ]
+perception = [
+    "opencv-python-headless",
+    "numpy",
+]
+speech = [
+    "faster-whisper",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

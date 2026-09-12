@@ -47,6 +47,7 @@ class HandState:
     outcome_kind: Optional[HandOutcomeKind] = field(default=None, init=False)
     _seen_tiles: Dict[Tile, int] = field(default_factory=dict, init=False)  # tile -> player
     _pending_cue: Optional[str] = field(default=None, init=False)
+    voids: Dict[int, set] = field(default_factory=lambda: {p: set() for p in range(4)}, init=False)
 
     def __post_init__(self) -> None:
         self.bidding = BiddingRound(dealer=self.dealer)
@@ -180,9 +181,24 @@ class HandState:
     def _close_trick(self, trick: Trick) -> None:
         assert self.scorer is not None
         self._check_trump_contradiction(trick)
+        self._record_voids(trick)
         self.scorer.record_trick(trick)
         self.tricks.append(trick)
         self._current_trick = None
+
+    def _record_voids(self, trick: Trick) -> None:
+        """A player who didn't follow the led suit is known to hold none of it —
+        only trustworthy once trump is confirmed (an ambiguous guess would record
+        false voids). This feeds probability estimation (engine.probability),
+        not legality, which is already enforced at play time.
+        """
+        if not self.trump_tracker.is_confirmed:
+            return
+        assert trick.led_suit is not None
+        trump = self.trump_tracker.confirmed
+        for player, tile in trick.plays:
+            if effective_suit(tile, trump, trick.led_suit) != trick.led_suit:
+                self.voids[player].add(trick.led_suit)
 
     def _check_trump_contradiction(self, trick: Trick) -> None:
         """If a player didn't follow the led suit under the current best-guess
@@ -219,6 +235,16 @@ class HandState:
         else:
             self.outcome_kind = HandOutcomeKind.CONCESSION
         return self.outcome_kind
+
+    # ---- state exposed for probability estimation -----------------------
+
+    @property
+    def played_tiles(self) -> set:
+        return set(self._seen_tiles.keys())
+
+    def remaining_hand_size(self, player: int) -> int:
+        played = sum(1 for p in self._seen_tiles.values() if p == player)
+        return 7 - played
 
     # ---- result ------------------------------------------------------
 
