@@ -119,32 +119,27 @@ what was done, when, and why — lives in the pr history for the gh repo)
     is dropped and doesn't leak forward; a cue meant for trick N doesn't
     bleed into trick N+1.
   - **(3)'s non-oracle mechanism, sketched for whoever designs it once
-    footage exists — deliberately not built now.** The oracle mechanism
-    removed earlier (`_check_trump_contradiction`) needed a lookup into a
-    player's *remaining concealed hand* to tell "genuinely void in a suit"
-    from "held a follower and revoked" — permanently impossible. But a
-    different, purely logical mechanism needs no such lookup: if a player
-    fails to follow led suit S under live hypothesis H (a candidate, not yet
-    confirmed), and that same player later plays a tile that computes as
-    suit S under H, that's a hard contradiction — they can't be void in S
-    under H and also hold/play S under H, so H must be wrong. No folklore
-    weighting needed, just the same publicly-observed play stream every
-    other mechanism here already sees. `TrumpHypothesisTracker.
-    observe_void` is already a documented no-op stub for exactly this;
-    `observe_contradiction` is already a fully reusable, hand-agnostic
-    primitive (verified: its own implementation only touches `self.weights`,
-    no hand-knowledge coupling survives in it after the oracle-removal
-    pass). What's missing is per-hypothesis void tracking (a player can be
-    void in suit S under candidate H1 but not H2, since suit membership
-    depends on trump) — real state-machine complexity, not a trivial wire-up:
-    it has to interact correctly with `observe_contradiction`'s existing
-    weight-reopening fallback (`_last_weights_before_empty`) — when a
-    candidate's weight collapses and later gets restored from a snapshot,
-    decide whether its void state restores alongside it or resets — exactly
-    the class of edge that broke in subtle ways during this project's
-    trump-hypothesis reversibility work. Needs its own design pass and
-    plan-critic review before building, not a bundled addition to anything
-    else.
+    footage exists — deliberately not built now.** A live, camera-free
+    mechanism is possible without any lookup into a player's remaining
+    concealed hand: if a player fails to follow led suit S under a live
+    (not yet confirmed) hypothesis H, and that same player later plays a
+    tile that computes as suit S under H, that's a hard contradiction —
+    they can't be void in S under H and also hold/play S under H, so H must
+    be wrong. No folklore weighting needed, just the same publicly-observed
+    play stream every other mechanism here already uses.
+    `TrumpHypothesisTracker.observe_void` is already a documented no-op stub
+    for exactly this; `observe_contradiction`'s implementation only touches
+    `self.weights` and needs no per-player hand data, so it's a reusable
+    primitive for this signal. What's missing is per-hypothesis void
+    tracking (a player can be void in suit S under candidate H1 but not H2,
+    since suit membership depends on trump) — real state-machine
+    complexity, not a trivial wire-up: it has to interact correctly with
+    `observe_contradiction`'s weight-reopening fallback
+    (`_last_weights_before_empty`) — when a candidate's weight collapses and
+    later gets restored from a snapshot, its void state needs a defined rule
+    for whether it restores alongside the weight or resets. Needs its own
+    design pass and plan-critic review before building, not a bundled
+    addition to anything else.
 - **Recovering a force-closed trick's missing tiles.** When a trick
   force-closes short (fewer than 4 plays observed), the hand is marked
   `disputed` and its count is not trusted for the rest of the hand's
@@ -160,9 +155,9 @@ what was done, when, and why — lives in the pr history for the gh repo)
 - **Confidence field on speech-sourced events — do not add yet, and note a
   related dead-code question first.** `BidMade`/`Passed`/`TrumpCalled`/
   `TrumpCueHeard` have no `confidence` field; `TilePlayed.confidence` does.
-  But `TilePlayed.confidence` is itself currently dead — every consumer of
-  it was deleted in the oracle-removal pass, so there are zero reads of it
-  anywhere in `engine/` today — and `TrumpCalled` (the event type) is
+  But `TilePlayed.confidence` is itself currently dead — there are zero
+  reads of it anywhere in `engine/` today — and `TrumpCalled` (the event
+  type) is
   entirely unconstructed anywhere (`call_trump()` takes raw `(caller,
   trump)` args, not this event). Adding more confidence fields with no
   consumer on top of one that's already unconsumed would be pure unforced
