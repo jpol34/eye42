@@ -27,6 +27,9 @@ class TileObservation:
     tile: Tile
     confidence: float
     position: Tuple[float, float]  # rectified-plane coordinates
+    # No shared clock convention with speech.bid_parser (which timestamps in
+    # start_time/end_time seconds) exists yet -- ordering a tile play against a
+    # spoken bid across modalities isn't possible until one is defined.
     frame_index: int
 
 
@@ -60,8 +63,11 @@ class TileIdentityClassifier(Protocol):
     a failed detection).
     """
 
-    def classify(self, tile_crop: np.ndarray) -> Tuple[Tile, float]:
-        """Returns (best-guess tile identity, confidence 0-1)."""
+    def classify(self, tile_crop: np.ndarray) -> List[Tuple[Tile, float]]:
+        """Returns candidate tile identities ranked by confidence (best guess
+        first, score 0-1 each), not just a single committed identity -- the
+        same "track weighted candidates, don't commit to one guess" convention
+        engine.trump_inference.TrumpHypothesisTracker uses for ambiguity."""
         ...
 
 
@@ -69,8 +75,11 @@ class EventSegmenter:
     """Turns a stream of per-frame TileObservations into discrete play events,
     using a settle-time debounce (a tile only counts as "played" after N stable
     frames — same pattern as DGT chessboard debouncing) and explicit trick-sweep
-    handling (raise rather than silently under-count if all 4 tiles of a trick
-    aren't logged before the winner's sweep clears the area).
+    handling: if all 4 tiles of a trick aren't logged before the winner's sweep
+    clears the area, this degrades gracefully rather than raising or silently
+    under-counting -- the same force-closed pattern engine.trick.Trick and
+    engine.hand.HandState use (see IrregularityKind.TRICK_FORCE_CLOSED), so a
+    missed sweep-tile is flagged as a real-event irregularity, not a crash.
     """
 
     def __init__(self, settle_frames: int = 15) -> None:

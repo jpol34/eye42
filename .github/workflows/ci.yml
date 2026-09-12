@@ -16,5 +16,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e ".[dev]"
+      - run: pip install -e ".[dev,perception,speech]"
       - run: pytest -v
+      - run: python -c "import eye42.perception.tile_detect, eye42.speech.bid_parser"

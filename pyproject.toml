@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "eye42"
 version = "0.1.0"
-description = "Passive camera+mic reconstruction of a Texas 42 domino game — bidding, trump, tricks, and score, with zero impact on gameplay."
+description = "Texas 42 domino rules/scoring engine (bidding, trump, tricks, score) built and tested; passive camera+mic reconstruction (perception, speech) is stubbed for a future phase."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
