@@ -325,6 +325,15 @@ class HandState:
                     reason="trick force-closed without ever reaching 4 distinct seats",
                     needs_confirmation=True,
                 ))
+                if len(trick.plays) < 4:
+                    # Some seats' tiles were never observed, so the count value
+                    # this trick contributes to the running score reflects only
+                    # the tiles perception actually caught -- the rest is
+                    # unaccounted for, not zero. The hand's remaining-points
+                    # arithmetic (HandScoreTracker.is_locked_set) has no way to
+                    # tell "accounted for" from "missing," so it can no longer be
+                    # trusted for this hand.
+                    self.disputed = True
             self._close_trick(trick)
 
     def _log_play_violations(self, event: TilePlayed, trick: Trick, violations: set) -> None:
