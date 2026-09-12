@@ -9,6 +9,7 @@ speech code.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Dict, Optional, Tuple
 
 from .tiles import Tile
 
@@ -55,3 +56,19 @@ class IrregularEndSignal:
     behavior) rather than normal one-tile-per-turn play."""
 
     tricks_played_so_far: int
+    # Optional richer misdeal signal (e.g. a seat visibly holding the wrong tile
+    # count): Phase 2 perception doesn't exist yet, so this is defaulted and
+    # unused until it does.
+    tiles_visible_by_seat: Optional[Dict[int, int]] = None
+
+
+@dataclass(frozen=True)
+class TilesDealt:
+    """The deal itself, when perception can observe it (Phase 2) or a hand
+    transcript supplies it directly. The missing deal-event representation --
+    this is what lets a misdeal (wrong tile count, an exposed tile) be modeled
+    at all, rather than only inferred after the fact."""
+
+    dealer: int
+    counts: Dict[int, int]  # seat -> tiles dealt
+    exposed_tiles: Tuple[Tile, ...] = ()

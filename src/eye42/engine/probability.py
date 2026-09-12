@@ -136,12 +136,21 @@ def _hands_fully_known(hand: HandState) -> bool:
     return hand.hands is not None and all(p in hand.hands for p in range(4))
 
 
-def estimate_bid_probability(hand: HandState, samples: int = 1000, rng: Optional[random.Random] = None) -> float:
-    """P(the bidding team still makes their contract), 0.0-1.0."""
+def estimate_bid_probability(
+    hand: HandState, samples: int = 1000, rng: Optional[random.Random] = None
+) -> Optional[float]:
+    """P(the bidding team still makes their contract), 0.0-1.0, or ``None`` if
+    the hand has an unresolved irregularity (a revoke, a tile that didn't match
+    a known hand, ...). A disputed hand's voids/hand-size bookkeeping may no
+    longer be internally consistent, which could otherwise make the deal
+    sampler unsatisfiable -- suppress the (viewer-only) estimate rather than
+    risk crashing on it."""
     if hand.contract is None or hand.scorer is None:
         raise ValueError("bidding must be resolved and scoring started first")
     if hand.trump_tracker.confirmed is None:
         raise ValueError("trump must be confirmed before estimating bid probability")
+    if hand.disputed:
+        return None
 
     if hand.scorer.is_locked_set:
         return 0.0
@@ -170,12 +179,17 @@ def estimate_bid_probability(hand: HandState, samples: int = 1000, rng: Optional
 
 def tile_hold_probability(
     hand: HandState, tile: Tile, player: int, samples: int = 1000, rng: Optional[random.Random] = None
-) -> float:
-    """P(``player`` holds ``tile``), 0.0-1.0, among tiles not yet played."""
+) -> Optional[float]:
+    """P(``player`` holds ``tile``), 0.0-1.0, among tiles not yet played, or
+    ``None`` if the hand is disputed (see ``estimate_bid_probability``). A tile
+    already observed played is answered directly regardless -- that's an
+    observed fact, not something the sampler needs to be consistent for."""
     if tile in hand.played_tiles:
         return 1.0 if hand._seen_tiles.get(tile) == player else 0.0
     if hand.trump_tracker.confirmed is None:
         raise ValueError("trump must be confirmed before estimating hold probability")
+    if hand.disputed:
+        return None
     if _hands_fully_known(hand):
         return 1.0 if tile in hand.hands[player] else 0.0  # type: ignore[index]
 
