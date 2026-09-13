@@ -116,12 +116,24 @@ given this camera's angle) but can misorder a part extending horizontally
 toward the camera across a nearer tile; bounded to roughly a tile's own
 size by using 2 segments per finger/forearm, named here as the approximation
 to revisit (a per-pixel depth buffer) if it ever proves to matter.
-`ground_truth.py`'s `_polygon_from_mask` takes only the largest contour, so
-a tile split into two visible blobs by a finger yields a YOLO polygon
-covering just the larger one — pre-existing (tile-on-tile can do this too),
-but hand occlusion makes it more common; multi-polygon YOLO-seg output would
-fix it, not done here. `_SKIN_COLOR` is an unmeasured placeholder tuned only
-for contrast against this scene's table/lighting, not real skin tones.
+`ground_truth.py`'s `_polygons_from_mask` now emits one YOLO-seg label line
+per disjoint visible fragment of a tile (matching ultralytics' own
+mask-to-label converter's convention of one line per contour, same class —
+not a novel scheme), so a tile split into two visible blobs by a finger no
+longer silently drops the smaller piece's genuinely-visible pixels;
+confirmed against a real simulated hand (14 of 36 frames in one hand
+produced at least one fragment split). This means `gen_sim_dataset.py`'s
+label semantics now diverge from `tools/gen_synthetic_tiles.py`'s own
+`_polygon_from_mask` (deliberately not touched — that compositor's own
+per-tile mask is an unsubtracted solid paste region and structurally can't
+produce disjoint fragments in the first place, so it stays single-line-
+per-tile): if the two data sources are ever combined into one training run,
+whatever consumes them needs to know "one label line" doesn't mean "one
+tile instance" for data from this module. `RETR_EXTERNAL` still won't
+split out a true enclosed hole (an occluder entirely inside a tile's
+silhouette, touching no edge) — a separate, narrower, still-unaddressed
+case. `_SKIN_COLOR` is an unmeasured placeholder tuned only for contrast
+against this scene's table/lighting, not real skin tones.
 
 **Deferred, explicitly out of scope for Phase 0** (see RESEARCH.md and the
 plan this was built from): measured roughness/gloss calibrated against real

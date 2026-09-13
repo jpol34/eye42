@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Generates a training/validation dataset from eye42.simgen's 3D physics simulation:
 either static physics-settled tile scenes, or full director-scripted 7-trick hands
-rendered frame-by-frame, in YOLO segmentation format (matching what
-tools/gen_synthetic_tiles.py produces) plus a richer per-frame JSONL ground-truth
-sidecar (see eye42.simgen.ground_truth).
+rendered frame-by-frame, in YOLO segmentation format (the same label line shape
+tools/gen_synthetic_tiles.py produces, but not the same label semantics -- this source
+can emit more than one line per tile when an occluder splits its visible region into
+disjoint pieces; see eye42.simgen.ground_truth's module docstring) plus a richer
+per-frame JSONL ground-truth sidecar (see eye42.simgen.ground_truth).
 
 --scenes is a minimal, centered settle-pile (all requested tiles dropped near the
 table's origin, not laid out across rack/trick/won-pile zones) -- useful for quick,
