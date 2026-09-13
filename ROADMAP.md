@@ -46,6 +46,24 @@ post-render sensor noise (`_add_sensor_noise`, randomized magnitude per
 call) so an artificially noise-free image isn't itself a synthetic-data
 tell — an unmeasured placeholder, not real calibration (see below).
 
+`render_photoreal()`'s lighting was badly overexposed until it was fixed: a
+300W area light with its emitting size left at Blender's unset 1×1m default,
+1.5m above a ~1.3m scene, produced diffuse radiance roughly 8x scene-linear
+"white" — a rendered tile body came back HSV saturation=9/value=253 (nearly
+white) instead of a saturated green, which silently broke
+`eye42.perception.tile_detect`'s real pip-counting classifier (verified by
+hand: 0/5 tiles correctly identified against these renders before the fix,
+5/7 after — the remaining 2 misses are specular-highlight ambiguity on a
+blank/near-blank half, a real difficulty real photography has too, not a
+simulation-only defect). Fixed by setting the light's `.size` and `.energy`
+explicitly (tuned by rendering and measuring actual output HSV against
+`tile_detect.py`'s own thresholds, not a formula alone) and setting
+`scene.view_settings.view_transform` explicitly to `"Standard"` rather than
+relying on Blender's version-dependent factory-template default. A
+regression test (`test_photoreal_render_body_and_pip_colors_land_within_perceptions_own_thresholds`)
+pins the rendered body color against `tile_detect.py`'s actual production
+threshold, not an arbitrary looser number.
+
 A Phase 1 hand+forearm occluder rig is also built (`simgen/hand.py`): 13
 rigid boxes (2 forearm segments, palm, 2 thumb segments, 4 fingers × 2
 segments each) placed by plain-numpy forward kinematics (`hand_parts`), not

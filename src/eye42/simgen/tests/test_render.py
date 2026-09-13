@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import cv2
 import numpy as np
 import pytest
 
@@ -243,3 +244,37 @@ def test_photoreal_render_shows_occluder_pixels_where_ground_truth_says_theyre_v
     tile_patch = tile_only[max(0, cy - 5) : cy + 5, max(0, cx - 5) : cx + 5]
     occluded_patch = with_occluder[max(0, cy - 5) : cy + 5, max(0, cx - 5) : cx + 5]
     assert not np.allclose(tile_patch.mean(axis=(0, 1)), occluded_patch.mean(axis=(0, 1)), atol=15)
+
+
+def test_photoreal_render_body_and_pip_colors_land_within_perceptions_own_thresholds():
+    """A real regression guard for a real bug: an earlier version of render_photoreal's
+    lighting (a 300W area light with an unset, default-sized emitter) overexposed every
+    render so badly that a rendered tile body came back HSV saturation=9/value=253 --
+    nearly white -- which silently broke eye42.perception.tile_detect's actual
+    pip-counting classifier (0/5 tiles correctly identified against real renders, verified
+    by hand). The bound here (V<=210) matches tile_detect.py's own _TILE_HSV_HIGH ceiling
+    exactly, not a looser number invented for this test -- a render that passes this but
+    would still fail the real production threshold is exactly the gap this guards against.
+
+    Uses a close-up camera where the tile fills most of the frame (not default_camera's
+    wide table view, where a single tile is only a few hundred pixels and dominated by
+    anti-aliased edge pixels -- confirmed by direct measurement to give unreliable,
+    falsely-alarming HSV stats at that scale)."""
+    bpy = pytest.importorskip("bpy")
+    from eye42.perception.tile_detect import _PIP_HSV_HIGH, _PIP_HSV_LOW, _TILE_HSV_HIGH
+    from eye42.simgen.render import render_photoreal
+
+    camera = Camera(image_size=(320, 320), focal_px=6000.0, position_m=(0.0, -0.08, 0.09), look_at_m=(0.0, 0.0, 0.01))
+    tile = _flat_tile(Tile.of(6, 6), 0.0, 0.0)
+
+    image = render_photoreal([tile], camera, samples=32)
+    infos = render_ground_truth([tile], camera)
+    mask = infos[0].visible_mask
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    pip_like = cv2.inRange(hsv, _PIP_HSV_LOW, _PIP_HSV_HIGH).astype(bool) & mask
+    body_like = mask & ~pip_like
+
+    assert body_like.sum() > 0 and pip_like.sum() > 0, "test setup assumption: both body and pip pixels are present"
+    body_hsv = hsv[body_like].mean(axis=0)
+    assert body_hsv[1] >= 150, f"tile body saturation too low (overexposed toward white): {body_hsv}"
+    assert body_hsv[2] <= _TILE_HSV_HIGH[2], f"tile body value exceeds perception's own tile-color ceiling: {body_hsv}"

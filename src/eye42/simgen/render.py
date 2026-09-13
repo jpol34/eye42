@@ -393,7 +393,34 @@ def render_photoreal(
             obj.data.materials.append(skin_mat)
 
     bpy.ops.object.light_add(type="AREA", location=(0, 0, 1.5))
-    bpy.context.object.data.energy = 300
+    light = bpy.context.object.data
+    # An AREA light's `energy` is radiant power (Watts) over its own emitting area, not a
+    # fixed brightness -- the previous energy=300 left `.size` at Blender's unset default
+    # (1x1m), which at this 1.5m throw over a small, glossy scene produced diffuse
+    # radiance roughly 8x scene-linear "white" (verified by measurement: a rendered tile
+    # body, meant to be BODY_COLOR's saturated green, came back HSV saturation=9/value=253
+    # -- nearly white -- which silently broke eye42.perception.tile_detect's real
+    # pip-counting classifier, since an overexposed tile body passes its pip-color
+    # threshold too). Both `size` (kept small so specular highlights stay corner-
+    # concentrated, matching RESEARCH.md's real-footage description of glossy corner
+    # blowout, rather than smeared across the whole face) and `energy` are set explicitly
+    # here, tuned by rendering and measuring actual output HSV against
+    # tile_detect.py's own thresholds (_TILE_HSV_HIGH's V<=210, _PIP_HSV_LOW's V>=165),
+    # not derived from an untested formula alone.
+    light.size = 0.4
+    light.energy = 6.0
+
+    # Explicit, not left to Blender's version-dependent factory-template default (which
+    # varies: Filmic pre-4.0, AgX 4.0+). "Standard" (plain linear-to-sRGB, no artistic
+    # tone curve) is deliberate, not just "the simplest option": Filmic/AgX intentionally
+    # desaturate and roll off midtones as part of their look, which works against hitting
+    # a specific target saturation for the tile body -- with the light energy above fixed
+    # to a physically sane level, there's no longer a highlight-blowout problem that would
+    # need Filmic/AgX's roll-off to protect against, so Standard's simpler, more
+    # predictable mapping is the better fit for a render whose output color needs to land
+    # in a specific numeric HSV range, not just look artistically pleasant.
+    scene.view_settings.view_transform = "Standard"
+    scene.view_settings.exposure = 0.0
 
     bpy.ops.object.camera_add(location=camera.position_m)
     cam_obj = bpy.context.object
