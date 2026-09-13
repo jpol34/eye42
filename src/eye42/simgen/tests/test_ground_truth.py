@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import json
 
+import numpy as np
 import pytest
 
 pytest.importorskip("mujoco")
 
 from eye42.engine.tiles import Tile
-from eye42.simgen.ground_truth import frame_ground_truth_dict, write_frame_truth_jsonl, yolo_seg_lines
+from eye42.simgen.ground_truth import _polygons_from_mask, frame_ground_truth_dict, write_frame_truth_jsonl, yolo_seg_lines
 from eye42.simgen.hand import RigidPart
 from eye42.simgen.physics import TileState
-from eye42.simgen.render import default_camera, render_ground_truth
+from eye42.simgen.render import TileRenderInfo, default_camera, render_ground_truth
 from eye42.simgen.trajectory import FrameSnapshot
 
 _IDENTITY_QUAT = (1.0, 0.0, 0.0, 0.0)
@@ -111,3 +112,46 @@ def test_write_frame_truth_jsonl_passes_occluders_into_the_visible_fraction(tmp_
     parsed = [json.loads(line) for line in out.read_text().strip().split("\n")]
     with_hand, without_hand = parsed[0], parsed[1]
     assert with_hand["tiles"][0]["visible_fraction"] < without_hand["tiles"][0]["visible_fraction"]
+
+
+def test_polygons_from_mask_returns_one_polygon_per_disjoint_fragment():
+    """An occluder crossing a tile's middle splits its visible pixels into separate
+    pieces -- both genuinely-visible pieces must become their own polygon, not just
+    whichever happens to be larger."""
+    mask = np.zeros((100, 100), dtype=bool)
+    mask[10:30, 10:30] = True
+    mask[10:30, 60:80] = True  # disjoint from the first fragment
+
+    polygons = _polygons_from_mask(mask)
+
+    assert len(polygons) == 2
+
+
+def test_polygons_from_mask_drops_only_the_fragment_below_the_area_threshold():
+    """The existing tiny-fragment filter must apply PER fragment, not just to whichever
+    fragment is largest -- a real, sizeable second fragment shouldn't be dropped just
+    because a third, genuinely-negligible one also exists."""
+    mask = np.zeros((100, 100), dtype=bool)
+    mask[10:30, 10:30] = True  # real fragment, area 400
+    mask[50:70, 50:70] = True  # a second real fragment, area 400
+    mask[90, 90] = True  # a single pixel, area ~0 -- below the existing <10px^2 cutoff
+
+    polygons = _polygons_from_mask(mask)
+
+    assert len(polygons) == 2
+
+
+def test_yolo_seg_lines_emits_one_line_per_disjoint_fragment_for_one_tile():
+    """A single occluded tile whose visible region is split into two pieces must
+    contribute two label lines, both class 0 -- not one line covering only the larger
+    piece, silently dropping the other piece's genuinely-visible pixels."""
+    mask = np.zeros((100, 100), dtype=bool)
+    mask[10:30, 10:30] = True
+    mask[10:30, 60:80] = True
+    info = TileRenderInfo(tile=Tile.of(6, 6), polygon_px=(), visible_mask=mask, visible_fraction=0.5)
+
+    lines = yolo_seg_lines([info])
+
+    assert len(lines) == 2
+    for line in lines:
+        assert line.split()[0] == "0"
