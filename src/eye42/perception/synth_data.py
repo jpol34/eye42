@@ -58,14 +58,21 @@ def draw_tile_crop(
     return np.vstack([draw_tile_half(pips_top, size), draw_tile_half(pips_bottom, size)])
 
 
-def _canonical_pip_positions(count: int, size: Tuple[int, int]) -> List[Tuple[int, int]]:
+def pip_layout_fractions(count: int) -> List[Tuple[float, float]]:
+    """The standard 0-6 domino pip layout as (u, v) fractions in [0, 1] of a tile
+    half's own box -- the single source of truth both this module's pixel-space
+    renderer and eye42.simgen.render's 3D texture builder place dots from, so the
+    two never drift apart into two different-looking pip layouts."""
     if count not in _PIP_LAYOUTS:
         raise ValueError(f"no canonical pip layout for {count} (expected 0-6)")
+    us = [0.25, 0.5, 0.75]
+    vs = [0.25, 0.5, 0.75]
+    return [(us[gx], vs[gy]) for gx, gy in (_GRID_POSITIONS[name] for name in _PIP_LAYOUTS[count])]
+
+
+def _canonical_pip_positions(count: int, size: Tuple[int, int]) -> List[Tuple[int, int]]:
     w, h = size
-    margin_x, margin_y = w * 0.25, h * 0.25
-    xs = [margin_x, w / 2, w - margin_x]
-    ys = [margin_y, h / 2, h - margin_y]
-    return [(int(xs[gx]), int(ys[gy])) for gx, gy in (_GRID_POSITIONS[name] for name in _PIP_LAYOUTS[count])]
+    return [(int(u * w), int(v * h)) for u, v in pip_layout_fractions(count)]
 
 
 def render_tile(top: int, bottom: int, half_size: Tuple[int, int] = _DEFAULT_HALF_SIZE) -> np.ndarray:

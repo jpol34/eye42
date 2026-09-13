@@ -19,9 +19,13 @@ import cv2
 import numpy as np
 
 from eye42.engine.tiles import Tile
-from eye42.perception.synth_data import BODY_COLOR  # reused, not duplicated -- see plan
+from eye42.perception.synth_data import BODY_COLOR, PIP_COLOR, pip_layout_fractions  # reused, not duplicated
 from eye42.simgen.physics import TileState
 from eye42.simgen.tile_geometry import TABLE_SIZE_M, TILE_HALF_EXTENTS_M
+
+_TOP_TEXTURE_SIZE = (256, 128)  # (w, h) px, matches TILE_LENGTH_M:TILE_WIDTH_M's 2:1 aspect
+_DIVIDER_HALF_WIDTH_PX = 3
+_PIP_RADIUS_PX = 10
 
 
 @dataclass(frozen=True)
@@ -162,13 +166,31 @@ def render_debug_preview(tile_states: Sequence[TileState], camera: Camera) -> np
     return image
 
 
+def _tile_top_texture(tile: Tile, size: Tuple[int, int] = _TOP_TEXTURE_SIZE) -> np.ndarray:
+    """A tile's top face as a flat BGR uint8 image: body color, a divider line down the
+    centerline (perpendicular to the tile's long axis -- the two halves sit side by side
+    along x/width here, NOT stacked along y like synth_data.py's draw_tile_crop), and each
+    half's pip dots placed via pip_layout_fractions -- the same reusable layout
+    synth_data.py's 2D renderer uses, so both stay visually consistent."""
+    w, h = size
+    image = np.full((h, w, 3), BODY_COLOR, dtype=np.uint8)
+    cv2.line(image, (w // 2, 0), (w // 2, h), PIP_COLOR, _DIVIDER_HALF_WIDTH_PX * 2)
+    for half_index, count in enumerate((tile.high, tile.low)):
+        half_w = w // 2
+        x_offset = half_index * half_w
+        for u, v in pip_layout_fractions(count):
+            cx, cy = x_offset + int(u * half_w), int(v * h)
+            cv2.circle(image, (cx, cy), _PIP_RADIUS_PX, PIP_COLOR, -1)
+    return image
+
+
 def render_photoreal(tile_states: Sequence[TileState], camera: Camera, samples: int = 32) -> np.ndarray:
     """Renders tile_states via headless Blender/Cycles (``bpy``) -- the actual
     fidelity-bearing renderer this initiative is built around (RESEARCH.md: ray-traced
     PBR rendering measurably beats flat/2D compositing for glossy, texture-less objects
-    like these tiles). Tile pip/divider texturing beyond a flat glossy body color is
-    explicitly deferred to a later fidelity pass (see ROADMAP.md) -- this proves the
-    physics-to-photoreal-pixel pipeline end-to-end, not final visual fidelity.
+    like these tiles). Each tile's top face carries a pip/divider texture built by
+    _tile_top_texture; measured roughness/gloss calibration against real footage remains
+    a later fidelity pass (see ROADMAP.md).
 
     ``bpy`` is imported lazily so this module (and everything that imports it, like
     ground_truth.py) stays importable without the optional ``sim-render`` extra."""
@@ -197,14 +219,57 @@ def render_photoreal(tile_states: Sequence[TileState], camera: Camera, samples: 
     # this session), which a rough/matte material would never reproduce.
 
     hx, hy, hz = TILE_HALF_EXTENTS_M
-    for state in tile_states:
+    for tile_index, state in enumerate(tile_states):
         bpy.ops.mesh.primitive_cube_add(size=1)
         obj = bpy.context.object
         obj.scale = (hx, hy, hz)
         obj.location = state.position
         obj.rotation_mode = "QUATERNION"
         obj.rotation_quaternion = state.orientation_quat
-        obj.data.materials.append(tile_mat)
+        obj.data.materials.append(tile_mat)  # index 0: sides/bottom
+
+        top_texture_bgr = _tile_top_texture(state.tile)
+        tex_h, tex_w = top_texture_bgr.shape[:2]
+        rgba = np.ones((tex_h, tex_w, 4), dtype=np.float32)
+        rgba[:, :, 0:3] = top_texture_bgr[:, :, ::-1].astype(np.float32) / 255.0  # BGR -> RGB
+        rgba = np.flipud(rgba)  # numpy row 0 = image top; Blender image row 0 = bottom
+        top_image = bpy.data.images.new(f"tile_top_{tile_index}", width=tex_w, height=tex_h, alpha=True)
+        # 'Non-Color' so Cycles reads these values as-is (linear), matching how
+        # bsdf.inputs["Base Color"].default_value above is fed raw 0-1 values with no
+        # sRGB decode -- otherwise the body (flat default_value) and the top face
+        # (an 8-bit image, sRGB by default) would render at visibly different
+        # brightness for what's meant to be the identical BODY_COLOR.
+        top_image.colorspace_settings.name = "Non-Color"
+        top_image.pixels.foreach_set(rgba.ravel())
+
+        top_mat = bpy.data.materials.new(f"tile_top_{tile_index}")
+        top_mat.use_nodes = True
+        top_bsdf = top_mat.node_tree.nodes["Principled BSDF"]
+        top_bsdf.inputs["Roughness"].default_value = 0.15
+        tex_node = top_mat.node_tree.nodes.new("ShaderNodeTexImage")
+        tex_node.image = top_image
+        top_mat.node_tree.links.new(tex_node.outputs["Color"], top_bsdf.inputs["Base Color"])
+        obj.data.materials.append(top_mat)  # index 1: top face
+
+        # A freshly-created primitive_cube_add mesh's polygon normals are in mesh-local
+        # space, unaffected by obj.location/obj.rotation_quaternion (those are object-
+        # level transforms) -- so the polygon whose local normal is +Z is always the top
+        # face, regardless of this tile's world-space pose.
+        uv_layer = obj.data.uv_layers.active
+        for polygon in obj.data.polygons:
+            if polygon.normal.z > 0.9:
+                polygon.material_index = 1
+                # primitive_cube_add's default UVs are a cross-layout unwrap -- each face
+                # gets only a QUARTER of the 0..1 image, not its own independent 0..1 quad
+                # (confirmed by inspecting a fresh cube's uv_layers directly; an earlier
+                # version here assumed a per-face 0..1 quad, which rendered only a corner
+                # slice of the pip texture). Remap the top face's own loops directly from
+                # local vertex coordinates (-0.5..0.5 on a size=1 cube) so it covers the
+                # full 0..1 texture, with local x/y (length/width) mapping to u/v.
+                for loop_index in polygon.loop_indices:
+                    vertex_index = obj.data.loops[loop_index].vertex_index
+                    vx, vy, _ = obj.data.vertices[vertex_index].co
+                    uv_layer.data[loop_index].uv = (vx + 0.5, vy + 0.5)
 
     bpy.ops.object.light_add(type="AREA", location=(0, 0, 1.5))
     bpy.context.object.data.energy = 300
