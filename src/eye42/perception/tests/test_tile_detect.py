@@ -210,7 +210,9 @@ def test_segmenter_reports_the_mean_confidence_of_the_winning_tiles_votes():
     segmenter = EventSegmenter(settle_frames=3)
     frame = np.zeros((50, 50, 3), dtype=np.uint8)
     _settle_on_empty_table(segmenter, frame)
-    confidences = [1.0, 0.6, 0.8]
+    confidences = [1.0, 0.6, 0.4]  # deliberately distinct from their mean, so this test
+    # can't pass under the old last-frame-wins behavior (which would report 0.4) by
+    # coincidence -- it must actually exercise the mean-of-votes computation.
 
     played: list = []
     for conf in confidences:
