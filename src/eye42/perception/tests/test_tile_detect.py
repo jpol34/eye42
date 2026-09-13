@@ -4,6 +4,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 
 from eye42.engine.tiles import Tile
 from eye42.perception.synth_data import BODY_COLOR as _BODY_COLOR
@@ -185,6 +186,41 @@ def test_segmenter_only_confirms_a_play_after_settle_frames():
 
     assert len(played) == 1
     assert played[0].tile == Tile.of(4, 2)
+
+
+def test_segmenter_resolves_a_settling_tile_by_plurality_vote_not_last_frame():
+    """A single misclassified frame landing on exactly the confirming frame must
+    not corrupt the reported identity -- the majority of the settle window's
+    frames agreeing on the real tile must win instead."""
+    segmenter = EventSegmenter(settle_frames=3)
+    frame = np.zeros((50, 50, 3), dtype=np.uint8)
+    _settle_on_empty_table(segmenter, frame)
+    real_tile = [TileObservation(tile=Tile.of(4, 2), confidence=1.0, position=(10.0, 10.0), frame_index=0)]
+    misread = [TileObservation(tile=Tile.of(1, 1), confidence=1.0, position=(10.0, 10.0), frame_index=0)]
+
+    segmenter.feed(frame, real_tile)
+    segmenter.feed(frame, real_tile)
+    played = segmenter.feed(frame, misread)  # the confirming frame is the noisy one
+
+    assert len(played) == 1
+    assert played[0].tile == Tile.of(4, 2)  # majority (2 of 3 frames), not the last frame
+
+
+def test_segmenter_reports_the_mean_confidence_of_the_winning_tiles_votes():
+    segmenter = EventSegmenter(settle_frames=3)
+    frame = np.zeros((50, 50, 3), dtype=np.uint8)
+    _settle_on_empty_table(segmenter, frame)
+    confidences = [1.0, 0.6, 0.4]  # deliberately distinct from their mean, so this test
+    # can't pass under the old last-frame-wins behavior (which would report 0.4) by
+    # coincidence -- it must actually exercise the mean-of-votes computation.
+
+    played: list = []
+    for conf in confidences:
+        obs = [TileObservation(tile=Tile.of(4, 2), confidence=conf, position=(10.0, 10.0), frame_index=0)]
+        played += segmenter.feed(frame, obs)
+
+    assert len(played) == 1
+    assert played[0].confidence == pytest.approx(sum(confidences) / len(confidences))
 
 
 def test_segmenter_drops_a_candidate_that_vanishes_before_settling():
