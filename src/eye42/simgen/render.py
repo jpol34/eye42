@@ -240,8 +240,9 @@ def _tile_top_texture(tile: Tile, size: Tuple[int, int] = _TOP_TEXTURE_SIZE) -> 
     """A tile's top face as a flat BGR uint8 image: body color, a divider line down the
     centerline (perpendicular to the tile's long axis -- the two halves sit side by side
     along x/width here, NOT stacked along y like synth_data.py's draw_tile_crop), and each
-    half's pip dots placed via pip_layout_fractions -- the same reusable layout
-    synth_data.py's 2D renderer uses, so both stay visually consistent."""
+    half's pip dots placed from pip_layout_fractions -- the same underlying grid
+    synth_data.py's 2D renderer uses, reused here with its (u, v) axes swapped to match
+    this texture's own side-by-side half orientation (see the loop below)."""
     w, h = size
     image = np.full((h, w, 3), BODY_COLOR, dtype=np.uint8)
     cv2.line(image, (w // 2, 0), (w // 2, h), PIP_COLOR, _DIVIDER_HALF_WIDTH_PX * 2)
@@ -249,7 +250,18 @@ def _tile_top_texture(tile: Tile, size: Tuple[int, int] = _TOP_TEXTURE_SIZE) -> 
         half_w = w // 2
         x_offset = half_index * half_w
         for u, v in pip_layout_fractions(count):
-            cx, cy = x_offset + int(u * half_w), int(v * h)
+            # pip_layout_fractions' (u, v) means (width-fraction, length-within-half-
+            # fraction) -- that's synth_data.py's OWN convention, from _canonical_pip_
+            # positions' size=(width, height) usage in its stacked-halves layout (halves
+            # stacked along y/length, so each half's "size" is (width, length-within-half)
+            # in that order). This texture's halves sit SIDE BY SIDE along x/length
+            # instead, the opposite orientation -- so u/v must swap here, or a real-
+            # domino six (3 dots across the length axis, 2 rows across width -- confirmed
+            # against the Unicode Standard's own Domino Tiles reference glyphs) renders
+            # transposed into 2 columns of 3 instead. Every other count (0-5) is
+            # unaffected: their grid positions are either symmetric under this swap or
+            # sit on the u==v diagonal.
+            cx, cy = x_offset + int(v * half_w), int(u * h)
             cv2.circle(image, (cx, cy), _PIP_RADIUS_PX, PIP_COLOR, -1)
     return image
 
