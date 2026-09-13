@@ -12,8 +12,9 @@ see RESEARCH.md's "Standalone 3D simulation" section for its current status.
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -195,22 +196,32 @@ _SENSOR_NOISE_SIGMA_RANGE = (1.0, 6.0)  # 0-255 scale, unmeasured -- RESEARCH.md
 # identically across every generated frame.
 
 
-def _add_sensor_noise(image: np.ndarray) -> np.ndarray:
-    sigma = np.random.uniform(*_SENSOR_NOISE_SIGMA_RANGE)
-    noise = np.random.normal(0.0, sigma, image.shape)
+def _add_sensor_noise(image: np.ndarray, rng: random.Random) -> np.ndarray:
+    # A local numpy Generator seeded from rng (rather than numpy's own global random
+    # state) so this stays reproducible under the same random.Random seeding convention
+    # physics.py/trajectory.py/director.py already use -- gen_sim_dataset.py's --seed
+    # would otherwise no longer reproduce byte-identical --photoreal datasets.
+    np_rng = np.random.default_rng(rng.randrange(2**32))
+    sigma = np_rng.uniform(*_SENSOR_NOISE_SIGMA_RANGE)
+    noise = np_rng.normal(0.0, sigma, image.shape)
     return np.clip(image.astype(np.float64) + noise, 0, 255).astype(np.uint8)
 
 
-def render_photoreal(tile_states: Sequence[TileState], camera: Camera, samples: int = 32) -> np.ndarray:
+def render_photoreal(
+    tile_states: Sequence[TileState], camera: Camera, samples: int = 32, rng: Optional[random.Random] = None
+) -> np.ndarray:
     """Renders tile_states via headless Blender/Cycles (``bpy``) -- the actual
     fidelity-bearing renderer this initiative is built around (RESEARCH.md: ray-traced
     PBR rendering measurably beats flat/2D compositing for glossy, texture-less objects
     like these tiles). Each tile's top face carries a pip/divider texture built by
     _tile_top_texture; measured roughness/gloss calibration against real footage remains
-    a later fidelity pass (see ROADMAP.md).
+    a later fidelity pass (see ROADMAP.md). ``rng`` seeds the post-render sensor-noise
+    step for reproducibility (pass the same seeded random.Random a caller uses elsewhere
+    in eye42.simgen for a fully reproducible frame); omit it for an unseeded one-off render.
 
     ``bpy`` is imported lazily so this module (and everything that imports it, like
     ground_truth.py) stays importable without the optional ``sim-render`` extra."""
+    rng = rng if rng is not None else random.Random()
     import bpy
     import mathutils
 
@@ -334,4 +345,4 @@ def render_photoreal(tile_states: Sequence[TileState], camera: Camera, samples: 
         out_path = f"{tmpdir}/render.png"
         scene.render.filepath = out_path
         bpy.ops.render.render(write_still=True)
-        return _add_sensor_noise(cv2.imread(out_path))
+        return _add_sensor_noise(cv2.imread(out_path), rng)

@@ -132,3 +132,21 @@ def test_photoreal_render_applies_independent_sensor_noise_per_call():
     second = render_photoreal(states, camera, samples=8)
 
     assert not np.array_equal(first, second)
+
+
+def test_photoreal_render_noise_is_reproducible_given_the_same_rng():
+    """gen_sim_dataset.py's --seed is meant to make a --photoreal dataset fully
+    reproducible; the sensor-noise step must honor a caller-supplied rng rather than
+    reaching into numpy's own global random state, or --seed would stop reproducing
+    byte-identical images even though every other pipeline stage stays seed-driven."""
+    bpy = pytest.importorskip("bpy")
+    from eye42.simgen.render import render_photoreal
+    import random
+
+    camera = default_camera((160, 120))
+    states = [_flat_tile(Tile.of(4, 4), 0.0, 0.0)]
+
+    first = render_photoreal(states, camera, samples=8, rng=random.Random(42))
+    second = render_photoreal(states, camera, samples=8, rng=random.Random(42))
+
+    assert np.array_equal(first, second)
