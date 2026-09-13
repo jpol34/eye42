@@ -45,6 +45,9 @@ entry elsewhere in this file, not restated here):
   data (see "Implementation notes for not-yet-built phases").
 - Phase 5 robustness hardening — only in response to a specific, reproducible
   failure mode real validation footage actually shows, not speculatively.
+- A shared clock/frame convention between perception and speech ("No shared
+  clock/frame convention between perception and speech stubs") — inert until
+  Phase 3 (speech) exists, which itself needs real recorded audio.
 
 ## Where the in-progress Phase 2 work lives
 
@@ -344,9 +347,21 @@ is still untuned against real footage.
   `TrumpCalled` now that both are fully dead, or keep them dormant the same
   way `observe_next_dealer`/`TilesDealt` were kept — not resolved here.
 - **No shared clock/frame convention between perception and speech stubs** —
-  `perception.tile_detect` timestamps with `frame_index: int`, `speech.
-  bid_parser` with `start_time`/`end_time` in seconds. Needed before a played
-  tile and a spoken bid can be ordered against each other; not yet defined.
+  `perception.tile_detect` timestamps with `frame_index: int` (a per-poll-loop
+  counter in `tools/live_view.py`'s `Session.on_frame`, unrelated to true
+  camera FPS, which itself varies under load), `speech.bid_parser`'s
+  `Utterance` with `start_time`/`end_time` in seconds (currently unproduced —
+  the whole module is `NotImplementedError` stubs). Needed before a played
+  tile and a spoken bid can be ordered against each other; currently inert,
+  since nothing yet compares the two. `EventStore.log_event` already stamps
+  every ingested event with a real wall-clock `time.time()`
+  (`perception`/`engine`'s existing telemetry sink) — the likely anchor for
+  both sides once speech exists, rather than a new mechanism. One real wrinkle
+  for whoever designs this: `tools/live_view.py` records video and audio as
+  two independently wall-clock-paced but separate files with no recorded
+  shared T0, so there's an unquantified startup-latency skew between them to
+  account for. Not yet defined; depends on Phase 3 (speech) actually
+  existing, which is separately already gated on real recorded audio.
 - **Speech bid vocabulary covers point bids only** — mark bids ("two marks,"
   "four marks," `BidKind.MARKS`) have no vocabulary entry in
   `speech.bid_parser` yet, even though the engine fully supports them.
