@@ -41,6 +41,10 @@ class IrregularityKind(Enum):
     BID_NOT_LEGAL = auto()  # a bid/pass BiddingRound rejected; dropped, hand continues
     TRICK_COUNT_EXCEEDED = auto()  # a play arriving after all 7 tricks are complete
     TRICK_CLOSED_EARLY = auto()  # a seat-already-played read force-started the next trick
+    SPLASH_PLUNGE_INFERRED = auto()  # a plain marks contract's first lead came from the
+    # bidder's partner -- reclassified as splash/plunge rather than flagged as
+    # out-of-turn, but this is inferred (not an explicit call), so it still
+    # needs confirmation
 
 
 @dataclass(frozen=True)

@@ -77,16 +77,6 @@ what was done, when, and why — lives in the pr history for the gh repo)
 
 ## Known gaps / ideas under consideration
 
-- **Splash/plunge is currently unreachable through live bidding.** The
-  correct mechanism — infer splash/plunge from who actually leads the first
-  trick under a MARKS contract — needs new state (who led trick 1) and its
-  own design pass; not yet built. `Contract.trump_caller` already correctly
-  resolves to the bidder's partner for SPLASH/PLUNGE, so once this lands, no
-  further change should be needed there.
-- **Revoke detection has no live path today.** In principle it doesn't need
-  any oracle knowledge: by a hand's end, every seat's original holding is
-  reconstructable from the union of what they actually played, so a genuine
-  revoke could be checked retroactively. Not built.
 - **Trump determination beyond the first lead.** The real priority order, as
   actually played: (1) an explicit verbal call is always primary and
   permanent — it must never be second-guessed by what the caller
@@ -156,30 +146,6 @@ what was done, when, and why — lives in the pr history for the gh repo)
   pile-inspection signal won't always recover everything. No reconciliation
   mechanism is built; this is only a note for whoever designs one once a
   real pile-inspection signal exists.
-- **Confidence field on speech-sourced events — do not add yet, and note a
-  related dead-code question first.** `BidMade`/`Passed`/`TrumpCalled`/
-  `TrumpCueHeard` have no `confidence` field; `TilePlayed.confidence` does.
-  But `TilePlayed.confidence` is itself currently dead — there are zero
-  reads of it anywhere in `engine/` today — and `TrumpCalled` (the event
-  type) is
-  entirely unconstructed anywhere (`call_trump()` takes raw `(caller,
-  trump)` args, not this event). Adding more confidence fields with no
-  consumer on top of one that's already unconsumed would be pure unforced
-  dead weight. `speech/bid_parser.py`'s `Utterance.confidence`/
-  `BidCandidate.combined_score` (`confidence * plausibility`) is a working
-  precedent for confidence-weighted speech scoring, so the idea isn't
-  unprecedented — it just isn't wired into the engine layer, and shouldn't
-  be guessed at before there's a concrete consumer. Separate, smaller
-  decision worth making on its own: cut `TilePlayed.confidence` and
-  `TrumpCalled` now that both are fully dead, or keep them dormant the same
-  way `observe_next_dealer`/`TilesDealt` were kept — not resolved here.
-- **No shared clock/frame convention between perception and speech stubs** —
-  `perception.tile_detect` timestamps with `frame_index: int`, `speech.
-  bid_parser` with `start_time`/`end_time` in seconds. Needed before a played
-  tile and a spoken bid can be ordered against each other; not yet defined.
-- **Speech bid vocabulary covers point bids only** — mark bids ("two marks,"
-  "four marks," `BidKind.MARKS`) have no vocabulary entry in
-  `speech.bid_parser` yet, even though the engine fully supports them.
 - **`perception.tile_detect`'s `TileIdentityClassifier.classify` needs a real
   implementation** — its interface already returns ranked candidates, not a
   single best guess, matching `TrumpHypothesisTracker`'s weighted-candidate

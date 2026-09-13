@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional
 
-from eye42.engine.bidding import BiddingRound
+from eye42.engine.bidding import PLUNGE_MIN_MARKS, BiddingRound
 
 # Trump is an int 0-6 only per confirmed house rules -- no "doubles"/"no-trump"
 # vocabulary, so it isn't modeled and shouldn't be added without a house-rule
@@ -24,6 +24,13 @@ from eye42.engine.bidding import BiddingRound
 #
 # Point bids only.
 CLOSED_VOCAB_BIDS = list(range(30, 43))
+# Marks bids: 1 through PLUNGE_MIN_MARKS (the highest realistic mark amount
+# under the confirmed house rules) -- covers plain marks bids as well as the
+# spoken amount of a splash/plunge bid. Splash vs. plunge is never
+# distinguished from the amount alone (see engine.hand's live-play inference,
+# which resolves that from who actually leads the first trick), so no
+# separate "splash"/"plunge" vocabulary entries are needed here.
+CLOSED_VOCAB_MARKS = list(range(1, PLUNGE_MIN_MARKS + 1))
 CLOSED_VOCAB_TRUMP_CUES = ("low end", "high end")
 
 

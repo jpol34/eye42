@@ -24,10 +24,14 @@ class TileObservation:
     """A single detected tile on the rectified table, before it's decided to be
     a genuine "play" (see the settle-time debounce in EventSegmenter)."""
 
+    # timestamp is seconds since recording start -- same unit as
+    # speech.bid_parser.Utterance.start_time/end_time, so a played tile and a
+    # spoken bid/cue can be ordered against each other without a frame-rate
+    # lookup.
     tile: Tile
     confidence: float
     position: Tuple[float, float]  # rectified-plane coordinates
-    frame_index: int
+    timestamp: float
 
 
 class TableRectifier:

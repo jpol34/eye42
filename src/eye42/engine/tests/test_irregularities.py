@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from eye42.engine.bidding import BidKind
 from eye42.engine.events import IrregularEndSignal, TilePlayed, TilesDealt
 from eye42.engine.hand import HandOutcomeKind, HandState
 from eye42.engine.probability import (
@@ -517,3 +518,282 @@ def test_a_duplicate_read_hand_still_returns_a_probability_estimate():
     sizes = {p: hand.remaining_hand_size(p) for p in range(4)}
     assert sum(sizes.values()) == 28 - len(hand.played_tiles)
     assert estimate_bid_probability(hand, samples=40) is not None
+
+
+# ---------------------------------------------------------------------------
+# splash/plunge inference from the first trick's actual leader
+# ---------------------------------------------------------------------------
+
+def test_partner_leading_a_marks_2_contract_infers_splash():
+    hand = HandState(dealer=3)
+    hand.bid(0, marks=2)
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)
+
+    # Seat 2 (seat 0's partner) leads instead of seat 0 -- the splash/plunge
+    # shape, not an out-of-turn play.
+    hand.play_tile(TilePlayed(player=2, tile=Tile.of(6, 6)))
+    hand.play_tile(TilePlayed(player=3, tile=Tile.of(1, 0)))
+    hand.play_tile(TilePlayed(player=0, tile=Tile.of(2, 0)))
+    hand.play_tile(TilePlayed(player=1, tile=Tile.of(3, 0)))
+
+    assert hand.contract.kind == BidKind.SPLASH
+    assert hand.contract.trump_caller == 2
+    assert hand.tricks[0].leader == 2
+    assert IrregularityKind.OUT_OF_TURN not in _kinds(hand)
+    assert IrregularityKind.SPLASH_PLUNGE_INFERRED in _kinds(hand)
+
+
+def test_partner_leading_a_marks_1_contract_stays_out_of_turn():
+    """Below SPLASH_MIN_MARKS no valid splash/plunge bid exists, so this is a
+    genuine out-of-turn play, not evidence of anything else."""
+    hand = HandState(dealer=3)
+    hand.bid(0, marks=1)
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)
+
+    hand.play_tile(TilePlayed(player=2, tile=Tile.of(6, 6)))
+    hand.play_tile(TilePlayed(player=3, tile=Tile.of(1, 0)))
+    hand.play_tile(TilePlayed(player=0, tile=Tile.of(2, 0)))
+    hand.play_tile(TilePlayed(player=1, tile=Tile.of(3, 0)))
+
+    assert hand.contract.kind == BidKind.MARKS
+    assert IrregularityKind.OUT_OF_TURN in _kinds(hand)
+    assert IrregularityKind.SPLASH_PLUNGE_INFERRED not in _kinds(hand)
+
+
+def test_bidder_leading_a_marks_contract_is_unaffected():
+    hand = HandState(dealer=3)
+    hand.bid(0, marks=4)
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)
+
+    hand.play_tile(TilePlayed(player=0, tile=Tile.of(6, 6)))
+    hand.play_tile(TilePlayed(player=1, tile=Tile.of(3, 0)))
+    hand.play_tile(TilePlayed(player=2, tile=Tile.of(2, 0)))
+    hand.play_tile(TilePlayed(player=3, tile=Tile.of(1, 0)))
+
+    assert hand.contract.kind == BidKind.MARKS
+    assert IrregularityKind.SPLASH_PLUNGE_INFERRED not in _kinds(hand)
+
+
+def test_an_unrelated_seat_leading_a_marks_2_contract_stays_out_of_turn():
+    """Only the bidder's partner leading first is splash/plunge-shaped -- any
+    other seat is still a genuine out-of-turn play."""
+    hand = HandState(dealer=3)
+    hand.bid(0, marks=2)
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)
+
+    # Seat 1 (unrelated to bidder 0 or partner 2) leads first.
+    hand.play_tile(TilePlayed(player=1, tile=Tile.of(6, 6)))
+    hand.play_tile(TilePlayed(player=2, tile=Tile.of(1, 0)))
+    hand.play_tile(TilePlayed(player=3, tile=Tile.of(2, 0)))
+    hand.play_tile(TilePlayed(player=0, tile=Tile.of(3, 0)))
+
+    assert hand.contract.kind == BidKind.MARKS
+    assert IrregularityKind.OUT_OF_TURN in _kinds(hand)
+    assert IrregularityKind.SPLASH_PLUNGE_INFERRED not in _kinds(hand)
+
+
+# ---------------------------------------------------------------------------
+# retroactive revoke detection
+# ---------------------------------------------------------------------------
+
+def _play_trick(hand: HandState, plays) -> None:
+    for player, tile in plays:
+        hand.play_tile(TilePlayed(player=player, tile=tile))
+
+
+def test_retroactive_revoke_is_detected_at_hand_end():
+    """Seat 1 fails to follow trick 1's led suit (3) despite holding several
+    suit-3 tiles, which it reveals across later tricks -- a hard contradiction
+    only checkable once the whole hand's plays are known."""
+    hand = HandState(dealer=3)
+    hand.bid(0, 30)
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)
+    hand.call_trump(0, trump=6)
+
+    _play_trick(hand, [(0, Tile.of(3, 1)), (1, Tile.of(2, 0)), (2, Tile.of(3, 0)), (3, Tile.of(4, 0))])
+    _play_trick(hand, [(0, Tile.of(6, 6)), (1, Tile.of(3, 3)), (2, Tile.of(6, 0)), (3, Tile.of(0, 0))])
+    _play_trick(hand, [(0, Tile.of(6, 5)), (1, Tile.of(3, 2)), (2, Tile.of(4, 2)), (3, Tile.of(2, 1))])
+    _play_trick(hand, [(0, Tile.of(6, 4)), (1, Tile.of(4, 3)), (2, Tile.of(4, 4)), (3, Tile.of(2, 2))])
+    _play_trick(hand, [(0, Tile.of(6, 3)), (1, Tile.of(5, 3)), (2, Tile.of(5, 1)), (3, Tile.of(4, 1))])
+    _play_trick(hand, [(0, Tile.of(6, 2)), (1, Tile.of(1, 0)), (2, Tile.of(5, 2)), (3, Tile.of(5, 0))])
+    _play_trick(hand, [(0, Tile.of(6, 1)), (1, Tile.of(1, 1)), (2, Tile.of(5, 5)), (3, Tile.of(5, 4))])
+
+    assert len(hand.tricks) == 7
+    hand.final_result()  # triggers retroactive revoke detection
+
+    revokes = [i for i in hand.repairs.irregularities if i.kind == IrregularityKind.REVOKE]
+    assert len(revokes) == 1
+    assert revokes[0].player == 1
+    assert "trick 1" in revokes[0].reason
+
+
+def test_a_genuine_void_is_not_flagged_as_a_revoke():
+    """The control for the test above: seat 1 doesn't follow trick 1's led
+    suit, but never holds a suit-3 tile at all -- a real void, not a revoke."""
+    hand = HandState(dealer=3)
+    hand.bid(0, 30)
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)
+    hand.call_trump(0, trump=6)
+
+    # Seat 1 never holds a suit-3 tile at any point -- its off-suit play in
+    # trick 1 is a real void, not a revoke. Seat 2 (which did follow suit 3
+    # in trick 1) absorbs the deal's other suit-3 tiles instead, which is
+    # harmless: only a non-follower is ever checked.
+    _play_trick(hand, [(0, Tile.of(3, 1)), (1, Tile.of(2, 0)), (2, Tile.of(3, 0)), (3, Tile.of(4, 0))])
+    _play_trick(hand, [(0, Tile.of(6, 6)), (1, Tile.of(1, 0)), (2, Tile.of(6, 0)), (3, Tile.of(0, 0))])
+    _play_trick(hand, [(0, Tile.of(6, 5)), (1, Tile.of(1, 1)), (2, Tile.of(3, 3)), (3, Tile.of(2, 1))])
+    _play_trick(hand, [(0, Tile.of(6, 4)), (1, Tile.of(4, 2)), (2, Tile.of(3, 2)), (3, Tile.of(2, 2))])
+    _play_trick(hand, [(0, Tile.of(6, 3)), (1, Tile.of(4, 4)), (2, Tile.of(4, 3)), (3, Tile.of(4, 1))])
+    _play_trick(hand, [(0, Tile.of(6, 2)), (1, Tile.of(5, 1)), (2, Tile.of(5, 3)), (3, Tile.of(5, 0))])
+    _play_trick(hand, [(0, Tile.of(6, 1)), (1, Tile.of(5, 2)), (2, Tile.of(5, 5)), (3, Tile.of(5, 4))])
+
+    hand.final_result()
+    revokes = [i for i in hand.repairs.irregularities if i.kind == IrregularityKind.REVOKE]
+    assert revokes == []
+
+
+def test_revoke_detection_skipped_when_trump_never_confirmed():
+    hand = HandState(dealer=3)
+    hand.bid(0, 30)
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)
+    # No call_trump(): trump is only ever a best-guess, never confirmed.
+
+    _play_trick(hand, [(0, Tile.of(3, 1)), (1, Tile.of(2, 0)), (2, Tile.of(3, 0)), (3, Tile.of(4, 0))])
+    _play_trick(hand, [(0, Tile.of(6, 6)), (1, Tile.of(3, 3)), (2, Tile.of(6, 0)), (3, Tile.of(0, 0))])
+    _play_trick(hand, [(0, Tile.of(6, 5)), (1, Tile.of(3, 2)), (2, Tile.of(4, 2)), (3, Tile.of(2, 1))])
+    _play_trick(hand, [(0, Tile.of(6, 4)), (1, Tile.of(4, 3)), (2, Tile.of(4, 4)), (3, Tile.of(2, 2))])
+    _play_trick(hand, [(0, Tile.of(6, 3)), (1, Tile.of(5, 3)), (2, Tile.of(5, 1)), (3, Tile.of(4, 1))])
+    _play_trick(hand, [(0, Tile.of(6, 2)), (1, Tile.of(1, 0)), (2, Tile.of(5, 2)), (3, Tile.of(5, 0))])
+    _play_trick(hand, [(0, Tile.of(6, 1)), (1, Tile.of(1, 1)), (2, Tile.of(5, 5)), (3, Tile.of(5, 4))])
+
+    hand.final_result()
+    assert IrregularityKind.REVOKE not in _kinds(hand)
+
+
+def test_revoke_detection_skipped_for_a_force_closed_hand():
+    hand = HandState(dealer=3)
+    hand.bid(0, 30)
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)
+    hand.call_trump(0, trump=6)
+
+    # Same trick-1 revoke shape as the positive test above...
+    _play_trick(hand, [(0, Tile.of(3, 1)), (1, Tile.of(2, 0)), (2, Tile.of(3, 0)), (3, Tile.of(4, 0))])
+    _play_trick(hand, [(0, Tile.of(6, 6)), (1, Tile.of(3, 3)), (2, Tile.of(6, 0)), (3, Tile.of(0, 0))])
+    _play_trick(hand, [(0, Tile.of(6, 5)), (1, Tile.of(3, 2)), (2, Tile.of(4, 2)), (3, Tile.of(2, 1))])
+    _play_trick(hand, [(0, Tile.of(6, 4)), (1, Tile.of(4, 3)), (2, Tile.of(4, 4)), (3, Tile.of(2, 2))])
+    _play_trick(hand, [(0, Tile.of(6, 3)), (1, Tile.of(5, 3)), (2, Tile.of(5, 1)), (3, Tile.of(4, 1))])
+    # ...but the 6th trick force-closes short (seat 2 never appears).
+    hand.play_tile(TilePlayed(player=0, tile=Tile.of(6, 2)))
+    hand.play_tile(TilePlayed(player=1, tile=Tile.of(1, 0)))
+    hand.play_tile(TilePlayed(player=1, tile=Tile.of(1, 1)))
+    hand.play_tile(TilePlayed(player=3, tile=Tile.of(5, 0)))
+    hand.play_tile(TilePlayed(player=3, tile=Tile.of(5, 4)))
+    hand.play_tile(TilePlayed(player=3, tile=Tile.of(4, 1)))  # push past FORCE_CLOSE_AFTER
+
+    assert hand.tricks[-1].force_closed is True
+    # A 7th trick still opens (seat 2's remaining tiles, seat 0's last trump);
+    # feed it so the hand actually reaches 7 tricks and final_result() doesn't
+    # raise for an incomplete contract.
+    hand.play_tile(TilePlayed(player=0, tile=Tile.of(6, 1)))
+    hand.play_tile(TilePlayed(player=2, tile=Tile.of(5, 2)))
+    hand.play_tile(TilePlayed(player=2, tile=Tile.of(5, 5)))
+
+    hand.final_result()
+    assert IrregularityKind.REVOKE not in _kinds(hand)
+
+
+def test_partner_calling_trump_before_any_play_infers_splash():
+    """The realistic table order: trump is called right after bidding
+    closes, before the first tile is played. The lead-based inference alone
+    (test above) doesn't cover this -- call_trump() must also recognize the
+    partner as evidence, or it logs a false TRUMP_CALLED_BY_WRONG_SEAT."""
+    hand = HandState(dealer=3)
+    hand.bid(0, marks=2)
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)
+
+    hand.call_trump(2, trump=6)  # seat 0's partner calls trump
+
+    assert hand.contract.kind == BidKind.SPLASH
+    assert hand.contract.trump_caller == 2
+    assert hand.trump_tracker.confirmed == 6
+    assert IrregularityKind.TRUMP_CALLED_BY_WRONG_SEAT not in _kinds(hand)
+    assert IrregularityKind.SPLASH_PLUNGE_INFERRED in _kinds(hand)
+
+    # The first trick led by that same partner is then unaffected too.
+    hand.play_tile(TilePlayed(player=2, tile=Tile.of(6, 6)))
+    hand.play_tile(TilePlayed(player=3, tile=Tile.of(1, 0)))
+    hand.play_tile(TilePlayed(player=0, tile=Tile.of(2, 0)))
+    hand.play_tile(TilePlayed(player=1, tile=Tile.of(3, 0)))
+    assert hand.tricks[0].leader == 2
+    assert IrregularityKind.OUT_OF_TURN not in _kinds(hand)
+
+
+def test_retroactive_revoke_corrects_the_false_void_it_supersedes():
+    """`_record_voids` runs live and, not yet knowing this was a revoke,
+    records seat 1 as void in suit 3 -- a false constraint per its own
+    docstring. Once `_detect_revokes` proves otherwise, that false void must
+    be removed, or engine.probability's deal sampler keeps using it."""
+    hand = HandState(dealer=3)
+    hand.bid(0, 30)
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)
+    hand.call_trump(0, trump=6)
+
+    _play_trick(hand, [(0, Tile.of(3, 1)), (1, Tile.of(2, 0)), (2, Tile.of(3, 0)), (3, Tile.of(4, 0))])
+    assert 3 in hand.voids[1]  # recorded live, before it's known to be a revoke
+
+    _play_trick(hand, [(0, Tile.of(6, 6)), (1, Tile.of(3, 3)), (2, Tile.of(6, 0)), (3, Tile.of(0, 0))])
+    _play_trick(hand, [(0, Tile.of(6, 5)), (1, Tile.of(3, 2)), (2, Tile.of(4, 2)), (3, Tile.of(2, 1))])
+    _play_trick(hand, [(0, Tile.of(6, 4)), (1, Tile.of(4, 3)), (2, Tile.of(4, 4)), (3, Tile.of(2, 2))])
+    _play_trick(hand, [(0, Tile.of(6, 3)), (1, Tile.of(5, 3)), (2, Tile.of(5, 1)), (3, Tile.of(4, 1))])
+    _play_trick(hand, [(0, Tile.of(6, 2)), (1, Tile.of(1, 0)), (2, Tile.of(5, 2)), (3, Tile.of(5, 0))])
+    _play_trick(hand, [(0, Tile.of(6, 1)), (1, Tile.of(1, 1)), (2, Tile.of(5, 5)), (3, Tile.of(5, 4))])
+
+    hand.final_result()
+
+    assert 3 not in hand.voids[1]  # the false void is corrected once the revoke is known
+    revokes = [i for i in hand.repairs.irregularities if i.kind == IrregularityKind.REVOKE]
+    assert len(revokes) == 1 and revokes[0].player == 1
+
+
+def test_stray_mid_hand_trump_call_does_not_retroactively_infer_splash():
+    """A correctly-attributed plain marks contract, played normally, must not
+    be reclassified by a stray/misheard call_trump arriving mid-hand -- only
+    a call before the hand's first tile is played is splash/plunge evidence."""
+    hand = HandState(dealer=3)
+    hand.bid(0, marks=2)
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)
+    hand.call_trump(0, trump=6)  # correct bidder calls trump normally
+
+    hand.play_tile(TilePlayed(player=0, tile=Tile.of(6, 6)))
+    hand.play_tile(TilePlayed(player=1, tile=Tile.of(3, 0)))
+
+    # A stray/misheard call, mid-trick, attributed to the bidder's partner.
+    hand.call_trump(2, trump=3)
+
+    assert hand.contract.kind == BidKind.MARKS  # unchanged, not reclassified
+    assert hand.contract.trump_caller == 0
+    assert hand.trump_tracker.confirmed == 6  # NOT overwritten by the stray call
+    assert IrregularityKind.TRUMP_CALLED_BY_WRONG_SEAT in _kinds(hand)
+    assert IrregularityKind.SPLASH_PLUNGE_INFERRED not in _kinds(hand)

@@ -27,14 +27,6 @@ class Passed:
 
 
 @dataclass(frozen=True)
-class TrumpCalled:
-    """An explicit, unambiguous trump declaration (e.g. parsed from clear speech)."""
-
-    caller: int
-    trump: int
-
-
-@dataclass(frozen=True)
 class TrumpCueHeard:
     """A weak verbal cue ('low end' / 'high end') accompanying a lead — not a full
     declaration on its own; only resolves trump combined with the led tile."""
@@ -47,7 +39,6 @@ class TrumpCueHeard:
 class TilePlayed:
     player: int
     tile: Tile
-    confidence: float = 1.0  # CV classifier confidence in this tile's identity, 0-1
 
 
 @dataclass(frozen=True)
