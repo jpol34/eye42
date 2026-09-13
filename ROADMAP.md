@@ -41,7 +41,15 @@ for the full design rationale.
 Each tile's top face carries a pip/divider texture (`_tile_top_texture` in
 `simgen/render.py`, reusing `synth_data.py`'s `pip_layout_fractions` as the
 shared layout convention) so rendered tiles show the correct pip count and
-divider line, not a flat glossy box. `render_photoreal()` also applies
+divider line, not a flat glossy box. A six's pips render as 3 dots across
+the length axis by 2 rows down the width axis, matching the Unicode
+Standard's own Domino Tiles reference glyphs (verified directly against
+them) — an earlier version rendered this transposed (2 columns of 3)
+because `pip_layout_fractions`' `(u, v)` means (width-fraction, length-
+fraction) per `synth_data.py`'s own stacked-halves convention, and this
+texture's side-by-side halves need those axes swapped, not used as-is;
+every other pip count (0-5) is unaffected by that swap. `render_photoreal()`
+also applies
 post-render sensor noise (`_add_sensor_noise`, randomized magnitude per
 call) so an artificially noise-free image isn't itself a synthetic-data
 tell — an unmeasured placeholder, not real calibration (see below).

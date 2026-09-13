@@ -7,6 +7,7 @@ import pytest
 pytest.importorskip("mujoco")
 
 from eye42.engine.tiles import Tile
+from eye42.perception.synth_data import PIP_COLOR
 from eye42.simgen.hand import RigidPart
 from eye42.simgen.physics import TileState
 from eye42.simgen.render import Camera, default_camera, render_debug_preview, render_ground_truth
@@ -283,3 +284,31 @@ def test_photoreal_render_body_and_pip_colors_land_within_perceptions_own_thresh
     body_hsv = hsv[body_like].mean(axis=0)
     assert body_hsv[1] >= 150, f"tile body saturation too close to the pip-color ceiling (risks misreading as a pip): {body_hsv}"
     assert body_hsv[2] <= _TILE_HSV_HIGH[2], f"tile body value exceeds perception's own tile-color ceiling: {body_hsv}"
+
+
+def test_tile_top_texture_renders_a_six_as_three_columns_of_two_not_two_columns_of_three():
+    """A real bug, caught by comparing against the Unicode Standard's own Domino Tiles
+    reference glyphs (the authoritative source for how a horizontal domino's pips are
+    conventionally arranged): _tile_top_texture's six-pip pattern was rendering as 2
+    columns of 3 (transposed from the real convention) because it consumed
+    pip_layout_fractions' (u, v) -- which means (width-fraction, length-fraction) per
+    synth_data.py's own stacked-halves convention -- without swapping axes for this
+    texture's side-by-side halves. The real pattern is 3 dots across the length axis x 2
+    rows down the width axis. Finds each pip's actual centroid (not raw pixel
+    coordinates, which a ~20px-wide circle spans many of) via contour detection, and
+    pins the geometric shape those centroids form -- so a future accidental un-swap
+    would fail this, not just look wrong."""
+    from eye42.simgen.render import _tile_top_texture
+
+    image = _tile_top_texture(Tile.of(6, 6))
+    h, w = image.shape[:2]
+    half = image[:, : w // 2 - 8]  # margin to exclude the divider line's own bleed
+    mask = np.all(half == PIP_COLOR, axis=-1).astype(np.uint8)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    centroids = [cv2.boundingRect(c) for c in contours]
+    centroid_x = [x + bw / 2 for x, y, bw, bh in centroids]
+    centroid_y = [y + bh / 2 for x, y, bw, bh in centroids]
+
+    assert len(contours) == 6
+    assert len({round(x) for x in centroid_x}) == 3, "a six's dots should span 3 distinct x-positions (3 across)"
+    assert len({round(y) for y in centroid_y}) == 2, "a six's dots should span 2 distinct y-positions (2 rows down)"
