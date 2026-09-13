@@ -15,6 +15,37 @@ entries here. This file should always read as "here's what's actually still
 open," never as a log of what used to be open. (The project's build history —
 what was done, when, and why — lives in the pr history for the gh repo)
 
+## Blocked on real footage
+
+These items need actual recorded gameplay (or a specific physical capture, like
+a lens-calibration checkerboard shot) before they can be responsibly designed
+or built — attempting them without that risks exactly the unvalidated-guesswork
+failure mode several entries below already call out. Once footage/capture
+exists, these are the first candidates to revisit (each points at its full
+entry elsewhere in this file, not restated here):
+
+- Ranked multi-candidate tile classification and the engine-side conflict
+  reconciliation it would unlock (`TileIdentityClassifier.classify`, under
+  "Known gaps / ideas under consideration").
+- Trump inference via observed void contradictions beyond the first lead
+  ("Trump determination beyond the first lead", item 3).
+- Force-closed trick recovery via the trick winner's pile ("Recovering a
+  force-closed trick's missing tiles").
+- Automated retroactive revoke reinterpretation ("Automated retroactive
+  reinterpretation of a late-discovered revoke").
+- Confidence-tuned, multi-tier hand-outcome classification (needs real
+  throw-in examples to calibrate against).
+- `simgen`'s measured roughness/gloss and calibrated lens distortion (under
+  "Standalone 3D simulation", "Deferred, explicitly out of scope for Phase 0").
+- Real table/camera measurements for `tile_geometry.py`'s `TABLE_SIZE_M`/zone
+  coordinates and `default_camera()`'s framing distance (under "Known rough
+  edges to tune, not fixed yet").
+- Phase 2-4's own numeric acceptance targets (per-tile accuracy, exact
+  final-score match) — validated against real recorded hands, not synthetic
+  data (see "Implementation notes for not-yet-built phases").
+- Phase 5 robustness hardening — only in response to a specific, reproducible
+  failure mode real validation footage actually shows, not speculatively.
+
 ## Where the in-progress Phase 2 work lives
 
 In the `sqlite-telemetry-live-view` worktree (branch
