@@ -71,6 +71,10 @@ def frame_ground_truth_dict(frame: FrameSnapshot, infos: Sequence[TileRenderInfo
             for info in infos
         ],
         "seat_racks": {str(seat): [_tile_identity(t) for t in tiles] for seat, tiles in frame.seat_racks.items()},
+        "occluders": [
+            {"name": part.name, "center_m": part.center_m, "orientation_quat": part.orientation_quat}
+            for part in frame.occluders
+        ],
     }
 
 
@@ -80,5 +84,5 @@ def write_frame_truth_jsonl(frames: Sequence[FrameSnapshot], camera: Camera, pat
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w") as handle:
         for frame in frames:
-            infos = render_ground_truth(frame.tile_states, camera)
+            infos = render_ground_truth(frame.tile_states, camera, frame.occluders)
             handle.write(json.dumps(frame_ground_truth_dict(frame, infos)) + "\n")

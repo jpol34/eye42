@@ -46,6 +46,54 @@ post-render sensor noise (`_add_sensor_noise`, randomized magnitude per
 call) so an artificially noise-free image isn't itself a synthetic-data
 tell — an unmeasured placeholder, not real calibration (see below).
 
+A Phase 1 hand+forearm occluder rig is also built (`simgen/hand.py`): 13
+rigid boxes (2 forearm segments, palm, 2 thumb segments, 4 fingers × 2
+segments each) placed by plain-numpy forward kinematics (`hand_parts`), not
+a bpy armature/skinned mesh — deliberate, so `render_ground_truth` stays
+usable without the `sim-render` extra (a skinned mesh's deformed vertices
+can't be projected without `bpy`). `place_hand` gives one parameterized
+reach-place-retract path per play/sweep, sampled at a randomized late phase
+(released-through-retracting, matching that `FrameSnapshot`s are post-settle
+moments, not mid-slide); `tools/gen_sim_dataset.py`'s `--scenes` track poses
+a hand at a random table location with independent probability instead
+(unconstrained domain randomization, no play/sweep to attach to). Hand/
+forearm parts participate in the SAME occlusion computation
+`render_ground_truth` uses for tile-tile occlusion — one global depth sort
+over tiles and occluder parts together, each part's own projected convex
+hull painted individually (not merged into one whole-hand blob), so gaps
+between fingers survive as real gaps in a tile's `visible_fraction`/mask,
+matching real footage. `render_debug_preview` (the default renderer
+`gen_sim_dataset.py` uses) and `render_photoreal` both draw occluders
+through the same code path, so a generated image and its ground-truth
+labels can never disagree about whether a hand is present.
+
+**Deferred, explicitly out of scope for Phase 1** (see RESEARCH.md's
+"Hand/manipulation fidelity" section for the full recommendation this is a
+first slice of): the full ~8-clip keyframed gesture library (Phase 1 ships
+one parameterized path); per-finger procedural noise beyond coarse per-frame
+curl/spread jitter; contact-driven physics — tiles are still moved by
+`physics.slide_toward`, the hand is posed near a tile's actual pre/post-
+slide position, not causing its motion (`hand_parts()`'s output is the same
+pose shape a future MuJoCo mocap-body attachment would consume, so this
+isn't wasted work); mid-motion/dense frame sampling (`FrameSnapshot`s stay
+settled-moments-only); skinning/deformable mesh; two hands/handedness/
+sleeve variety; shuffle-phase hand modeling (RESEARCH.md explicitly licenses
+low fidelity there).
+
+**Known rough edges (hand rig):** occlusion uses one constant depth per box
+part (matching the pre-existing tile-tile approach), not a true per-pixel
+depth buffer — accurate for a palm hovering over a tile (the common case
+given this camera's angle) but can misorder a part extending horizontally
+toward the camera across a nearer tile; bounded to roughly a tile's own
+size by using 2 segments per finger/forearm, named here as the approximation
+to revisit (a per-pixel depth buffer) if it ever proves to matter.
+`ground_truth.py`'s `_polygon_from_mask` takes only the largest contour, so
+a tile split into two visible blobs by a finger yields a YOLO polygon
+covering just the larger one — pre-existing (tile-on-tile can do this too),
+but hand occlusion makes it more common; multi-polygon YOLO-seg output would
+fix it, not done here. `_SKIN_COLOR` is an unmeasured placeholder tuned only
+for contrast against this scene's table/lighting, not real skin tones.
+
 **Deferred, explicitly out of scope for Phase 0** (see RESEARCH.md and the
 plan this was built from): measured roughness/gloss calibrated against real
 footage (pips currently share the body's flat `Roughness=0.15`, no separate
@@ -53,11 +101,8 @@ matte/gloss distinction); calibrated lens distortion (RESEARCH.md's Tier 3
 groups this with sensor noise as needing a real checkerboard calibration
 capture, which doesn't exist yet — only that capture-blocked half is still
 deferred; the sensor-noise half above is a plausible, uncalibrated
-placeholder shipped ahead of it); the articulated hand+forearm rig with a
-keyframed gesture library (footage research found this is genuinely needed,
-not optional — tiles currently teleport-slide via a physics-driven push, no
-hand visible at all); GPU-rented bulk generation; retraining/evaluating the
-YOLOv8-seg model against this new data source.
+placeholder shipped ahead of it); GPU-rented bulk generation;
+retraining/evaluating the YOLOv8-seg model against this new data source.
 
 **Known rough edges to tune, not fixed yet:** `tile_geometry.py`'s
 `TABLE_SIZE_M` and `trajectory.py`'s seat rack/won-pile zone coordinates are

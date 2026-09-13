@@ -36,26 +36,47 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from eye42.engine.tiles import full_set  # noqa: E402
 from eye42.simgen.director import script_one_hand  # noqa: E402
 from eye42.simgen.ground_truth import write_frame_truth_jsonl, yolo_seg_lines  # noqa: E402
+from eye42.simgen.hand import HandPose, hand_parts  # noqa: E402
 from eye42.simgen.physics import TileSimulation  # noqa: E402
 from eye42.simgen.render import default_camera, render_debug_preview, render_ground_truth  # noqa: E402
+from eye42.simgen.tile_geometry import TABLE_SIZE_M  # noqa: E402
 from eye42.simgen.trajectory import FrameSnapshot, simulate_hand  # noqa: E402
 
 _IMAGE_SIZE = (640, 640)
+_SCENE_HAND_PRESENCE_PROB = 0.6  # a --scenes track has no play/sweep to attach a hand to,
+# so this is unconstrained domain randomization (RESEARCH.md's finding that hand-tile
+# contact is near-constant during real play, not that every still needs one) -- a
+# plausible placeholder rate, not a measured one, same status as the sensor-noise range.
+
+
+def _random_scene_hand(rng: random.Random):
+    """A hand+forearm posed at a random table location/orientation, for --scenes'
+    unconstrained domain-randomization track (no play/sweep intent to attach to)."""
+    if rng.random() > _SCENE_HAND_PRESENCE_PROB:
+        return ()
+    table_w, table_h = TABLE_SIZE_M
+    pose = HandPose(
+        wrist_m=(rng.uniform(-table_w / 4, table_w / 4), rng.uniform(-table_h / 4, table_h / 4), 0.03),
+        yaw_rad=rng.uniform(0, 2 * 3.14159265),
+        curl=rng.uniform(0.0, 0.5),
+        spread=rng.random(),
+    )
+    return tuple(hand_parts(pose))
 
 
 def _render_frame(frame: FrameSnapshot, camera, photoreal: bool, rng: random.Random):
     if photoreal:
         from eye42.simgen.render import render_photoreal
 
-        return render_photoreal(frame.tile_states, camera, rng=rng)
-    return render_debug_preview(frame.tile_states, camera)
+        return render_photoreal(frame.tile_states, camera, rng=rng, occluders=frame.occluders)
+    return render_debug_preview(frame.tile_states, camera, frame.occluders)
 
 
 def _write_frame(
     frame: FrameSnapshot, camera, photoreal: bool, rng: random.Random, image_path: Path, label_path: Path
 ) -> None:
     image = _render_frame(frame, camera, photoreal, rng)
-    infos = render_ground_truth(frame.tile_states, camera)
+    infos = render_ground_truth(frame.tile_states, camera, frame.occluders)
     cv2.imwrite(str(image_path), image)
     label_path.write_text("\n".join(yolo_seg_lines(infos)))
 
@@ -87,7 +108,8 @@ def generate(
         tiles = rng.sample(sorted(full_set()), k=rng.randint(2, 8))
         sim = TileSimulation(tiles, seed=seed + i)
         states = sim.drop_and_settle(spread=0.15)
-        frame = FrameSnapshot(index=scene_index, tile_states=tuple(states), seat_racks={})
+        occluders = _random_scene_hand(random.Random(f"{seed}-hand-{i}"))
+        frame = FrameSnapshot(index=scene_index, tile_states=tuple(states), seat_racks={}, occluders=occluders)
         all_frames.append(frame)
         _write_frame(
             frame, camera, photoreal, random.Random(f"{seed}-noise-{i}"),
