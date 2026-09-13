@@ -43,16 +43,18 @@ from eye42.simgen.trajectory import FrameSnapshot, simulate_hand  # noqa: E402
 _IMAGE_SIZE = (640, 640)
 
 
-def _render_frame(frame: FrameSnapshot, camera, photoreal: bool):
+def _render_frame(frame: FrameSnapshot, camera, photoreal: bool, rng: random.Random):
     if photoreal:
         from eye42.simgen.render import render_photoreal
 
-        return render_photoreal(frame.tile_states, camera)
+        return render_photoreal(frame.tile_states, camera, rng=rng)
     return render_debug_preview(frame.tile_states, camera)
 
 
-def _write_frame(frame: FrameSnapshot, camera, photoreal: bool, image_path: Path, label_path: Path) -> None:
-    image = _render_frame(frame, camera, photoreal)
+def _write_frame(
+    frame: FrameSnapshot, camera, photoreal: bool, rng: random.Random, image_path: Path, label_path: Path
+) -> None:
+    image = _render_frame(frame, camera, photoreal, rng)
     infos = render_ground_truth(frame.tile_states, camera)
     cv2.imwrite(str(image_path), image)
     label_path.write_text("\n".join(yolo_seg_lines(infos)))
@@ -88,7 +90,7 @@ def generate(
         frame = FrameSnapshot(index=scene_index, tile_states=tuple(states), seat_racks={})
         all_frames.append(frame)
         _write_frame(
-            frame, camera, photoreal,
+            frame, camera, photoreal, random.Random(f"{seed}-noise-{i}"),
             output_dir / "images" / split / f"scene_{scene_index:05d}.jpg",
             output_dir / "labels" / split / f"scene_{scene_index:05d}.txt",
         )
@@ -100,7 +102,7 @@ def generate(
             split = "val" if scene_index % 10 == 0 else "train"
             all_frames.append(frame)
             _write_frame(
-                frame, camera, photoreal,
+                frame, camera, photoreal, random.Random(f"{seed}-noise-{h}-{frame.index}"),
                 output_dir / "images" / split / f"hand{h:03d}_frame_{frame.index:05d}.jpg",
                 output_dir / "labels" / split / f"hand{h:03d}_frame_{frame.index:05d}.txt",
             )
