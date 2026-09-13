@@ -21,9 +21,13 @@ from eye42.engine.bidding import BiddingRound
 # Trump is an int 0-6 only per confirmed house rules -- no "doubles"/"no-trump"
 # vocabulary, so it isn't modeled and shouldn't be added without a house-rule
 # change.
-#
-# Point bids only.
-CLOSED_VOCAB_BIDS = list(range(30, 43))
+CLOSED_VOCAB_BIDS = list(range(30, 43))  # point bids: 30-42, per BiddingRound's own legality check
+# Marks bids ("two marks," "four marks") have no fixed numeric ceiling in the
+# engine's own bidding legality (BiddingRound._bid_kind_and_amount only
+# requires >=1), unlike point bids' fixed 30-42 range -- so there's no
+# analogous closed numeric set to define here. What distinguishes a marks bid
+# from a point bid in speech is the word itself.
+CLOSED_VOCAB_MARKS_WORDS = ("mark", "marks")
 CLOSED_VOCAB_TRUMP_CUES = ("low end", "high end")
 
 

@@ -362,9 +362,6 @@ is still untuned against real footage.
   shared T0, so there's an unquantified startup-latency skew between them to
   account for. Not yet defined; depends on Phase 3 (speech) actually
   existing, which is separately already gated on real recorded audio.
-- **Speech bid vocabulary covers point bids only** — mark bids ("two marks,"
-  "four marks," `BidKind.MARKS`) have no vocabulary entry in
-  `speech.bid_parser` yet, even though the engine fully supports them.
 - **`perception.tile_detect`'s `TileIdentityClassifier.classify` needs a real
   implementation** — its interface already returns ranked candidates, not a
   single best guess, matching `TrumpHypothesisTracker`'s weighted-candidate
