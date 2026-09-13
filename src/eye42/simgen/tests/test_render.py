@@ -114,3 +114,21 @@ def test_photoreal_render_produces_a_real_image():
     assert image is not None
     assert image.shape == (120, 160, 3)
     assert image.std() > 0, "a real render should have visual variation, not a flat blank frame"
+
+
+def test_photoreal_render_applies_independent_sensor_noise_per_call():
+    """Two renders of the identical scene must not be byte-identical -- proving the
+    post-render sensor-noise step (an unmeasured placeholder against an artificially
+    noise-free render, see render.py's _SENSOR_NOISE_SIGMA_RANGE comment) actually runs
+    and varies per call, rather than being dead code or a fixed pattern every frame
+    would otherwise share."""
+    bpy = pytest.importorskip("bpy")
+    from eye42.simgen.render import render_photoreal
+
+    camera = default_camera((160, 120))
+    states = [_flat_tile(Tile.of(4, 4), 0.0, 0.0)]
+
+    first = render_photoreal(states, camera, samples=8)
+    second = render_photoreal(states, camera, samples=8)
+
+    assert not np.array_equal(first, second)

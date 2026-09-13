@@ -184,6 +184,23 @@ def _tile_top_texture(tile: Tile, size: Tuple[int, int] = _TOP_TEXTURE_SIZE) -> 
     return image
 
 
+_SENSOR_NOISE_SIGMA_RANGE = (1.0, 6.0)  # 0-255 scale, unmeasured -- RESEARCH.md's Tier 3
+# calls for noise "matched to the real capture chain," which needs a real calibration
+# capture this project doesn't have yet (same status as TABLE_SIZE_M's placeholder
+# margin). This is a plausible placeholder, not that calibration, applied only so an
+# artificially noise-free render isn't itself a synthetic-data tell a model could key on
+# (RESEARCH.md: "the idealized clean image problem is a domain-randomization finding, not
+# just an aesthetic one"). Randomized per call, not fixed, so a real camera's varying
+# noise magnitude is approximated rather than one single arbitrary constant repeated
+# identically across every generated frame.
+
+
+def _add_sensor_noise(image: np.ndarray) -> np.ndarray:
+    sigma = np.random.uniform(*_SENSOR_NOISE_SIGMA_RANGE)
+    noise = np.random.normal(0.0, sigma, image.shape)
+    return np.clip(image.astype(np.float64) + noise, 0, 255).astype(np.uint8)
+
+
 def render_photoreal(tile_states: Sequence[TileState], camera: Camera, samples: int = 32) -> np.ndarray:
     """Renders tile_states via headless Blender/Cycles (``bpy``) -- the actual
     fidelity-bearing renderer this initiative is built around (RESEARCH.md: ray-traced
@@ -317,4 +334,4 @@ def render_photoreal(tile_states: Sequence[TileState], camera: Camera, samples: 
         out_path = f"{tmpdir}/render.png"
         scene.render.filepath = out_path
         bpy.ops.render.render(write_still=True)
-        return cv2.imread(out_path)
+        return _add_sensor_noise(cv2.imread(out_path))

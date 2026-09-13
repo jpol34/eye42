@@ -41,17 +41,23 @@ for the full design rationale.
 Each tile's top face carries a pip/divider texture (`_tile_top_texture` in
 `simgen/render.py`, reusing `synth_data.py`'s `pip_layout_fractions` as the
 shared layout convention) so rendered tiles show the correct pip count and
-divider line, not a flat glossy box.
+divider line, not a flat glossy box. `render_photoreal()` also applies
+post-render sensor noise (`_add_sensor_noise`, randomized magnitude per
+call) so an artificially noise-free image isn't itself a synthetic-data
+tell — an unmeasured placeholder, not real calibration (see below).
 
 **Deferred, explicitly out of scope for Phase 0** (see RESEARCH.md and the
 plan this was built from): measured roughness/gloss calibrated against real
 footage (pips currently share the body's flat `Roughness=0.15`, no separate
-matte/gloss distinction); calibrated lens distortion/sensor noise; the
-articulated hand+forearm rig with a keyframed gesture library (footage
-research found this is genuinely needed, not optional — tiles currently
-teleport-slide via a physics-driven push, no hand visible at all); GPU-rented
-bulk generation; retraining/evaluating the YOLOv8-seg model against this new
-data source.
+matte/gloss distinction); calibrated lens distortion (RESEARCH.md's Tier 3
+groups this with sensor noise as needing a real checkerboard calibration
+capture, which doesn't exist yet — only that capture-blocked half is still
+deferred; the sensor-noise half above is a plausible, uncalibrated
+placeholder shipped ahead of it); the articulated hand+forearm rig with a
+keyframed gesture library (footage research found this is genuinely needed,
+not optional — tiles currently teleport-slide via a physics-driven push, no
+hand visible at all); GPU-rented bulk generation; retraining/evaluating the
+YOLOv8-seg model against this new data source.
 
 **Known rough edges to tune, not fixed yet:** `tile_geometry.py`'s
 `TABLE_SIZE_M` and `trajectory.py`'s seat rack/won-pile zone coordinates are
