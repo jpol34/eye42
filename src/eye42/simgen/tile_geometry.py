@@ -20,9 +20,11 @@ TILE_MASS_KG = 0.007
 # world measurement -- this is a plausible placeholder for a domino table's play area
 # until a real physical measurement or camera calibration exists (see RESEARCH.md:
 # "calibration.json is a homography, not a camera calibration").
-TABLE_SIZE_M = (1.1, 1.1)  # comfortably covers trajectory.py's rack zones (+/-0.35m
+TABLE_SIZE_M = (1.3, 1.3)  # comfortably covers trajectory.py's rack zones (+/-0.35m
 # plus drop spread), not just the central trick area -- a real table physically extends
 # under the players' racks too, unlike the *rectified calibration crop*, which research
 # found does NOT (RESEARCH.md: racks/piles fall outside the real rig's calibrated quad).
 # This simulation's camera has no such calibration-region restriction, so it shouldn't
-# reproduce that limitation.
+# reproduce that limitation. Sized with margin above the rack zone's worst-case reach from
+# origin (see test_tile_geometry.py) rather than the tightest value that happens to fit,
+# since the exact meters are an unverified placeholder pending a real table measurement.
