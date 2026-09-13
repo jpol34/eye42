@@ -5,6 +5,12 @@ rendered frame-by-frame, in YOLO segmentation format (matching what
 tools/gen_synthetic_tiles.py produces) plus a richer per-frame JSONL ground-truth
 sidecar (see eye42.simgen.ground_truth).
 
+--scenes is a minimal, centered settle-pile (all requested tiles dropped near the
+table's origin, not laid out across rack/trick/won-pile zones) -- useful for quick,
+cheap tile-appearance coverage, not a representative full-table layout. --hands is
+the representative full-game layout, driven by the same director/trajectory code a
+real hand uses.
+
 Output layout:
     <output-dir>/images/train/*.jpg, images/val/*.jpg
     <output-dir>/labels/train/*.txt, labels/val/*.txt   (YOLO-seg polygons, class 0 = "tile")
