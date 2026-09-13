@@ -430,10 +430,10 @@ class HandState:
     def _close_trick(self, trick: Trick) -> None:
         self._record_voids(trick)
         if self.scorer is None:
-            # Explicit guard, not an assert: `python -O` strips asserts, and this
-            # is the line the marks-upgrade crash used to detonate on (contract
-            # set, scorer never built). Log and skip the scoring rather than
-            # halting a hand that is otherwise fine.
+            # Explicit guard, not an assert: `python -O` strips asserts, and a
+            # trick can complete with the contract set but the scorer never
+            # built. Log and skip the scoring rather than halting a hand that
+            # is otherwise fine.
             self.repairs.log_irregularity(Irregularity(
                 kind=IrregularityKind.PLAY_BEFORE_CONTRACT,
                 reason="trick completed before a score tracker existed; not scored",

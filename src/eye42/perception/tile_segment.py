@@ -56,9 +56,9 @@ def _undo_letterbox(x: float, y: float, scale: float, pad: Tuple[int, int]) -> T
 
 def _cxcywh_to_xywh_topleft(boxes_cxcywh: np.ndarray) -> np.ndarray:
     """cv2.dnn.NMSBoxes expects (x, y, width, height) with (x, y) the top-left corner --
-    NOT (x1, y1, x2, y2). An earlier version here passed an (x1, y1, x2, y2) array
-    directly, which NMSBoxes silently misread as (x, y, width, height), corrupting every
-    IoU computation."""
+    NOT (x1, y1, x2, y2). Passing an (x1, y1, x2, y2) array directly is silently
+    misread as (x, y, width, height), corrupting every IoU computation, so boxes
+    must be converted through this function first."""
     x1 = boxes_cxcywh[:, 0] - boxes_cxcywh[:, 2] / 2
     y1 = boxes_cxcywh[:, 1] - boxes_cxcywh[:, 3] / 2
     return np.column_stack([x1, y1, boxes_cxcywh[:, 2], boxes_cxcywh[:, 3]])
