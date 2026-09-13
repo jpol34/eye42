@@ -6,6 +6,7 @@ import pytest
 pytest.importorskip("mujoco")
 
 from eye42.engine.tiles import Tile
+from eye42.simgen.hand import RigidPart
 from eye42.simgen.physics import TileState
 from eye42.simgen.render import Camera, default_camera, render_debug_preview, render_ground_truth
 
@@ -150,3 +151,95 @@ def test_photoreal_render_noise_is_reproducible_given_the_same_rng():
     second = render_photoreal(states, camera, samples=8, rng=random.Random(42))
 
     assert np.array_equal(first, second)
+
+
+def _box_occluder(x: float, y: float, half_x: float, half_y: float, name: str = "occluder") -> RigidPart:
+    """A flat box occluder centered above the table, for controlled occlusion tests --
+    not a real hand.hand_parts() rig, just a simple probe shape."""
+    return RigidPart(name, (x, y, 0.02), _IDENTITY_QUAT, (half_x, half_y, 0.005))
+
+
+def test_an_occluder_directly_over_a_tile_reduces_its_visible_fraction():
+    camera = default_camera((320, 320))
+    tile = _flat_tile(Tile.of(6, 6), 0.0, 0.0)
+    occluder = _box_occluder(0.0, 0.0, 0.05, 0.05)
+
+    unoccluded_fraction = render_ground_truth([tile], camera)[0].visible_fraction
+    occluded_fraction = render_ground_truth([tile], camera, occluders=[occluder])[0].visible_fraction
+
+    assert unoccluded_fraction == pytest.approx(1.0, abs=0.02)
+    assert occluded_fraction < 0.3
+
+
+def test_no_occluders_argument_matches_the_default_empty_tuple():
+    """render_ground_truth's occluders param must be purely additive -- every pre-
+    existing call site (this file's other tests included) calls it with exactly 2
+    positional args, so a call with occluders explicitly empty must match one without
+    the argument at all, byte for byte."""
+    camera = default_camera((320, 320))
+    tile = _flat_tile(Tile.of(3, 2), 0.0, 0.0)
+
+    without_arg = render_ground_truth([tile], camera)
+    with_empty = render_ground_truth([tile], camera, occluders=())
+
+    assert without_arg[0].visible_fraction == with_empty[0].visible_fraction
+    assert np.array_equal(without_arg[0].visible_mask, with_empty[0].visible_mask)
+
+
+def test_a_gap_between_two_occluders_leaves_the_tile_partially_visible():
+    """Two separate occluder parts straddling a tile with a gap between them must NOT
+    be treated as one merged blob -- the gap should survive as real visible tile pixels,
+    the exact finger-gap-visibility behavior real footage shows (RESEARCH.md)."""
+    camera = default_camera((320, 320))
+    tile = _flat_tile(Tile.of(6, 6), 0.0, 0.0)
+    left = _box_occluder(-0.03, 0.0, 0.008, 0.05, "left")
+    right = _box_occluder(0.03, 0.0, 0.008, 0.05, "right")
+
+    infos = render_ground_truth([tile], camera, occluders=[left, right])
+
+    assert 0.1 < infos[0].visible_fraction < 0.9
+
+
+def test_render_debug_preview_draws_occluders_not_just_tiles():
+    """gen_sim_dataset.py uses render_debug_preview by default (--photoreal is opt-in)
+    -- if it silently ignored occluders, the default-generated corpus would have
+    ground-truth labels claiming hand occlusion the images never actually show."""
+    camera = default_camera((320, 320))
+    tile = _flat_tile(Tile.of(6, 6), 0.0, 0.0)
+    occluder = _box_occluder(0.0, 0.0, 0.05, 0.05)
+
+    without_occluder = render_debug_preview([tile], camera)
+    with_occluder = render_debug_preview([tile], camera, occluders=[occluder])
+
+    assert not np.array_equal(without_occluder, with_occluder)
+
+
+def test_photoreal_render_shows_occluder_pixels_where_ground_truth_says_theyre_visible():
+    """Mirrors the tile/ground-truth-agreement test above, but for an occluder: the
+    pixel where render_ground_truth says a tile is occluded must NOT be tile-colored in
+    the photoreal image (it should be the skin-colored occluder instead), proving the
+    occluder participates in the real rendered image, not just the label computation."""
+    bpy = pytest.importorskip("bpy")
+    from eye42.simgen.render import render_photoreal
+
+    # A tight, close-in camera (same style as the tile/ground-truth-agreement test's cam1
+    # above) -- default_camera's wide table-framing view makes a single tile only a few
+    # pixels across, too small to reliably sample a patch from.
+    camera = Camera(image_size=(320, 320), focal_px=6000.0, position_m=(0.0, -0.08, 0.09), look_at_m=(0.0, 0.0, 0.01))
+    tile = _flat_tile(Tile.of(6, 6), 0.0, 0.0)
+    occluder = _box_occluder(0.0, 0.0, 0.05, 0.05)
+
+    infos = render_ground_truth([tile], camera, occluders=[occluder])
+    assert infos[0].visible_fraction < 0.3, "test setup assumption: the occluder should mostly cover the tile"
+
+    tile_only = render_photoreal([tile], camera, samples=16)
+    with_occluder = render_photoreal([tile], camera, samples=16, occluders=[occluder])
+
+    # Sample at the OCCLUDER's own projected center, not the tile's -- under an oblique
+    # camera, a point higher up (the occluder) projects to a different screen location
+    # than a point at table level (the tile), even directly above it in world space.
+    cx, cy = camera.project(occluder.center_m)
+    cx, cy = int(cx), int(cy)
+    tile_patch = tile_only[max(0, cy - 5) : cy + 5, max(0, cx - 5) : cx + 5]
+    occluded_patch = with_occluder[max(0, cy - 5) : cy + 5, max(0, cx - 5) : cx + 5]
+    assert not np.allclose(tile_patch.mean(axis=(0, 1)), occluded_patch.mean(axis=(0, 1)), atol=15)

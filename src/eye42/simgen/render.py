@@ -21,12 +21,20 @@ import numpy as np
 
 from eye42.engine.tiles import Tile
 from eye42.perception.synth_data import BODY_COLOR, PIP_COLOR, pip_layout_fractions  # reused, not duplicated
+from eye42.simgen.hand import RigidPart
 from eye42.simgen.physics import TileState
 from eye42.simgen.tile_geometry import TABLE_SIZE_M, TILE_HALF_EXTENTS_M
 
 _TOP_TEXTURE_SIZE = (256, 128)  # (w, h) px, matches TILE_LENGTH_M:TILE_WIDTH_M's 2:1 aspect
 _DIVIDER_HALF_WIDTH_PX = 3
 _PIP_RADIUS_PX = 10
+_SKIN_COLOR = (55, 85, 140)  # BGR, a generic mid-tone skin tone -- deliberately not tuned
+# to any specific real footage, same "plausible placeholder" status as
+# _SENSOR_NOISE_SIGMA_RANGE. Deliberately fairly dark: a lighter tone blows out to near-
+# white against the table's own bright (0.85,0.85,0.82) base color under this scene's
+# lighting, which would defeat the entire point of a visible occluder.
+_OCCLUDER_OWNER = -2  # ownership-array sentinel distinct from -1 (nothing painted there) and
+# any tile index (>= 0), so a hand/forearm pixel is neither "empty" nor mistaken for a tile
 
 
 @dataclass(frozen=True)
@@ -89,19 +97,42 @@ def default_camera(image_size: Tuple[int, int] = (640, 640)) -> Camera:
     return Camera(image_size=image_size, focal_px=image_size[0] * 1.5, position_m=(0.0, -0.95, 1.05))
 
 
-def _tile_top_face_corners_m(state: TileState) -> np.ndarray:
-    """The 4 corners of a tile's top face, in world space, given its current pose."""
-    hx, hy, hz = TILE_HALF_EXTENTS_M
-    local_corners = np.array([[-hx, -hy, hz], [hx, -hy, hz], [hx, hy, hz], [-hx, hy, hz]])
-    w, x, y, z = state.orientation_quat  # MuJoCo's (w, x, y, z) convention
-    rotation = np.array(
+def _rotation_from_quat(quat: Tuple[float, float, float, float]) -> np.ndarray:
+    """A 3x3 rotation matrix from a MuJoCo-convention (w, x, y, z) quaternion -- shared by
+    every function below that projects an oriented box's corners, so tile and hand-part
+    projection can never independently drift the way Camera.basis()'s docstring records
+    an earlier camera/render mismatch doing."""
+    w, x, y, z = quat
+    return np.array(
         [
             [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
             [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
             [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
         ]
     )
+
+
+def _tile_top_face_corners_m(state: TileState) -> np.ndarray:
+    """The 4 corners of a tile's top face, in world space, given its current pose."""
+    hx, hy, hz = TILE_HALF_EXTENTS_M
+    local_corners = np.array([[-hx, -hy, hz], [hx, -hy, hz], [hx, hy, hz], [-hx, hy, hz]])
+    rotation = _rotation_from_quat(state.orientation_quat)
     return (rotation @ local_corners.T).T + np.array(state.position)
+
+
+def _part_corners_m(part: RigidPart) -> np.ndarray:
+    """All 8 corners of a hand/forearm occluder segment's box, in world space."""
+    hx, hy, hz = part.half_extents_m
+    local_corners = np.array(
+        [
+            [sx * hx, sy * hy, sz * hz]
+            for sx in (-1, 1)
+            for sy in (-1, 1)
+            for sz in (-1, 1)
+        ]
+    )
+    rotation = _rotation_from_quat(part.orientation_quat)
+    return (rotation @ local_corners.T).T + np.array(part.center_m)
 
 
 @dataclass(frozen=True)
@@ -114,56 +145,94 @@ class TileRenderInfo:
     visible_fraction: float  # visible-pixel-count / full-unoccluded-polygon-pixel-count
 
 
-def render_ground_truth(tile_states: Sequence[TileState], camera: Camera) -> List[TileRenderInfo]:
+def _fill_mask(polygon_px: Sequence[Tuple[float, float]], size: Tuple[int, int]) -> np.ndarray:
+    w, h = size
+    mask = np.zeros((h, w), dtype=np.uint8)
+    pts = np.array(polygon_px, dtype=np.int32).reshape(-1, 1, 2)
+    cv2.fillPoly(mask, [pts], 1)
+    return mask.astype(bool)
+
+
+def render_ground_truth(
+    tile_states: Sequence[TileState], camera: Camera, occluders: Sequence[RigidPart] = ()
+) -> List[TileRenderInfo]:
     """Projects every tile's top face and computes occlusion-correct visibility masks,
-    painting back-to-front by camera depth so a nearer tile's mask always wins any pixel
-    it shares with a farther one -- a poor-man's z-buffer, but driven by real physics-
-    simulated 3D position, not by compositing order."""
+    painting back-to-front by camera depth so a nearer object always wins any pixel it
+    shares with a farther one -- a poor-man's z-buffer, but driven by real physics-
+    simulated 3D position, not by compositing order. ``occluders`` (a hand/forearm rig's
+    parts, see hand.py) participate in the SAME depth-sorted paint pass as tiles, not a
+    separate one -- a tile under a hand must lose visible_fraction exactly as it would
+    under another tile, since that's the actual ground truth a training label must
+    reflect (this is the same bug class synth_data.py's occluded-mask bug was, just with
+    a different occluder). Each occluder part's silhouette is its own projected convex
+    hull (a box's projected outline always is one) -- painted individually, not merged
+    into one whole-hand blob, so gaps between fingers survive as real gaps in the
+    resulting tile visibility, matching what real footage shows (RESEARCH.md)."""
     w, h = camera.image_size
     ownership = np.full((h, w), -1, dtype=np.int32)
-    full_masks: List[np.ndarray] = []
-    polygons: List[Tuple[Tuple[float, float], ...]] = []
 
-    depths = [camera.depth_of(ts.position) for ts in tile_states]
-    order_far_to_near = sorted(range(len(tile_states)), key=lambda i: -depths[i])
-
+    tile_polygons: List[Tuple[Tuple[float, float], ...]] = []
+    tile_masks: List[np.ndarray] = []
     for state in tile_states:
-        corners_m = _tile_top_face_corners_m(state)
-        polygon = tuple(camera.project(c) for c in corners_m)
-        polygons.append(polygon)
-        mask = np.zeros((h, w), dtype=np.uint8)
-        pts = np.array(polygon, dtype=np.int32).reshape(-1, 1, 2)
-        cv2.fillPoly(mask, [pts], 1)
-        full_masks.append(mask.astype(bool))
+        polygon = tuple(camera.project(c) for c in _tile_top_face_corners_m(state))
+        tile_polygons.append(polygon)
+        tile_masks.append(_fill_mask(polygon, (w, h)))
 
-    for i in order_far_to_near:
-        ownership[full_masks[i]] = i  # nearer tiles are painted later, overwriting farther ones
+    occluder_masks: List[np.ndarray] = []
+    for part in occluders:
+        corners_px = np.array([camera.project(c) for c in _part_corners_m(part)], dtype=np.float32)
+        hull = cv2.convexHull(corners_px).reshape(-1, 2)
+        occluder_masks.append(_fill_mask(hull, (w, h)))
+
+    entries = [(camera.depth_of(ts.position), "tile", i) for i, ts in enumerate(tile_states)]
+    entries += [(camera.depth_of(part.center_m), "occluder", i) for i, part in enumerate(occluders)]
+    for _, kind, i in sorted(entries, key=lambda e: -e[0]):  # far to near -- nearer objects
+        # painted later, overwriting farther ones, regardless of whether they're a tile
+        # or an occluder part
+        if kind == "tile":
+            ownership[tile_masks[i]] = i
+        else:
+            ownership[occluder_masks[i]] = _OCCLUDER_OWNER
 
     results: List[TileRenderInfo] = []
     for i, state in enumerate(tile_states):
         visible = ownership == i
-        full_count = int(full_masks[i].sum())
+        full_count = int(tile_masks[i].sum())
         fraction = float(visible.sum()) / full_count if full_count > 0 else 0.0
         results.append(
-            TileRenderInfo(tile=state.tile, polygon_px=polygons[i], visible_mask=visible, visible_fraction=fraction)
+            TileRenderInfo(tile=state.tile, polygon_px=tile_polygons[i], visible_mask=visible, visible_fraction=fraction)
         )
     return results
 
 
-def render_debug_preview(tile_states: Sequence[TileState], camera: Camera) -> np.ndarray:
+def render_debug_preview(
+    tile_states: Sequence[TileState], camera: Camera, occluders: Sequence[RigidPart] = ()
+) -> np.ndarray:
     """A flat-shaded top-down preview image (BGR, uint8) for eyeballing a generated
     scene -- NOT the fidelity-bearing renderer this initiative is built around (see
     RESEARCH.md: 3D rendering fidelity matters for these glossy tiles, and this preview
     has none). Real training-data pixels come from BlenderProc/Cycles (below), gated
     behind the `sim-render` extra; this exists so the physics/occlusion pipeline above
-    can be visually sanity-checked without it."""
+    can be visually sanity-checked without it.
+
+    Draws ``occluders`` too, in the same depth order render_ground_truth uses --
+    gen_sim_dataset.py uses this (not render_photoreal) as its default renderer, so
+    skipping occluders here would produce a hand-less image next to ground-truth labels
+    that claim hand occlusion, which is worse than no hand rig at all."""
     w, h = camera.image_size
     image = np.full((h, w, 3), 235, dtype=np.uint8)  # off-white table, matches synth_data.py
-    infos = render_ground_truth(tile_states, camera)
-    depths = {info.tile: camera.depth_of(state.position) for info, state in zip(infos, tile_states)}
-    for info in sorted(infos, key=lambda i: -depths[i.tile]):
-        pts = np.array(info.polygon_px, dtype=np.int32).reshape(-1, 1, 2)
-        cv2.fillPoly(image, [pts], BODY_COLOR)
+    infos = render_ground_truth(tile_states, camera, occluders)
+
+    entries = [(camera.depth_of(state.position), "tile", info) for info, state in zip(infos, tile_states)]
+    entries += [(camera.depth_of(part.center_m), "occluder", part) for part in occluders]
+    for _, kind, obj in sorted(entries, key=lambda e: -e[0]):
+        if kind == "tile":
+            pts = np.array(obj.polygon_px, dtype=np.int32).reshape(-1, 1, 2)
+            cv2.fillPoly(image, [pts], BODY_COLOR)
+        else:
+            corners_px = np.array([camera.project(c) for c in _part_corners_m(obj)], dtype=np.float32)
+            hull = cv2.convexHull(corners_px).reshape(-1, 1, 2).astype(np.int32)
+            cv2.fillPoly(image, [hull], _SKIN_COLOR)
     return image
 
 
@@ -208,7 +277,11 @@ def _add_sensor_noise(image: np.ndarray, rng: random.Random) -> np.ndarray:
 
 
 def render_photoreal(
-    tile_states: Sequence[TileState], camera: Camera, samples: int = 32, rng: Optional[random.Random] = None
+    tile_states: Sequence[TileState],
+    camera: Camera,
+    samples: int = 32,
+    rng: Optional[random.Random] = None,
+    occluders: Sequence[RigidPart] = (),
 ) -> np.ndarray:
     """Renders tile_states via headless Blender/Cycles (``bpy``) -- the actual
     fidelity-bearing renderer this initiative is built around (RESEARCH.md: ray-traced
@@ -218,6 +291,9 @@ def render_photoreal(
     a later fidelity pass (see ROADMAP.md). ``rng`` seeds the post-render sensor-noise
     step for reproducibility (pass the same seeded random.Random a caller uses elsewhere
     in eye42.simgen for a fully reproducible frame); omit it for an unseeded one-off render.
+    ``occluders`` (a hand/forearm rig's parts, see hand.py) are rendered as plain skin-
+    colored boxes -- flat material, not the tiles' pip texture/UV work, since they're a
+    separate concern (occlusion correctness, not tile identity).
 
     ``bpy`` is imported lazily so this module (and everything that imports it, like
     ground_truth.py) stays importable without the optional ``sim-render`` extra."""
@@ -298,6 +374,23 @@ def render_photoreal(
                     vertex_index = obj.data.loops[loop_index].vertex_index
                     vx, vy, _ = obj.data.vertices[vertex_index].co
                     uv_layer.data[loop_index].uv = (vx + 0.5, vy + 0.5)
+
+    if occluders:
+        skin_mat = bpy.data.materials.new("hand_skin")
+        skin_mat.use_nodes = True
+        skin_bsdf = skin_mat.node_tree.nodes["Principled BSDF"]
+        blue, green, red = _SKIN_COLOR  # BGR, per this project's cv2 convention
+        skin_bsdf.inputs["Base Color"].default_value = (red / 255, green / 255, blue / 255, 1.0)
+        skin_bsdf.inputs["Roughness"].default_value = 0.6  # matte -- deliberately not the
+        # tiles' glossy 0.15, real skin has no comparable specular blowout
+        for part in occluders:
+            bpy.ops.mesh.primitive_cube_add(size=1)
+            obj = bpy.context.object
+            obj.scale = part.half_extents_m
+            obj.location = part.center_m
+            obj.rotation_mode = "QUATERNION"
+            obj.rotation_quaternion = part.orientation_quat
+            obj.data.materials.append(skin_mat)
 
     bpy.ops.object.light_add(type="AREA", location=(0, 0, 1.5))
     bpy.context.object.data.energy = 300
