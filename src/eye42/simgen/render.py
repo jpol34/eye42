@@ -60,9 +60,10 @@ class Camera:
         """(eye, forward, right, true_up), all in world space -- the single source of
         truth both render_ground_truth's projection and render_photoreal's Blender
         camera placement are built from, so the two can never silently disagree about
-        which way the camera is oriented (an earlier version had each recompute this
-        independently -- Blender's own to_track_quat heuristic vs. this Gram-Schmidt
-        basis -- which only coincidentally agreed for one hardcoded camera placement)."""
+        which way the camera is oriented. Blender's own to_track_quat heuristic would
+        compute a different basis than this Gram-Schmidt one for most placements, so
+        each camera consumer must derive from this shared basis rather than recompute
+        its own."""
         return self._basis()
 
     def _basis(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -331,8 +332,8 @@ def render_photoreal(
     blue, green, red = BODY_COLOR  # BODY_COLOR is BGR, per this project's cv2 convention
     bsdf.inputs["Base Color"].default_value = (red / 255, green / 255, blue / 255, 1.0)
     bsdf.inputs["Roughness"].default_value = 0.15  # glossy -- real tiles show specular
-    # blowout on their corners under normal lighting (confirmed against real footage
-    # this session), which a rough/matte material would never reproduce.
+    # blowout on their corners under normal lighting (see RESEARCH.md), which a
+    # rough/matte material would never reproduce.
 
     hx, hy, hz = TILE_HALF_EXTENTS_M
     for tile_index, state in enumerate(tile_states):
@@ -407,16 +408,14 @@ def render_photoreal(
     bpy.ops.object.light_add(type="AREA", location=(0, 0, 1.5))
     light = bpy.context.object.data
     # An AREA light's `energy` is radiant power (Watts) over its own emitting area, not a
-    # fixed brightness -- the previous energy=300 left `.size` at Blender's unset default
-    # (1x1m), which at this 1.5m throw over a small, glossy scene produced diffuse
-    # radiance roughly 8x scene-linear "white" (verified by measurement: a rendered tile
-    # body, meant to be BODY_COLOR's saturated green, came back HSV saturation=9/value=253
-    # -- nearly white -- which silently broke eye42.perception.tile_detect's real
-    # pip-counting classifier, since an overexposed tile body passes its pip-color
-    # threshold too). Both `size` (kept small so specular highlights stay corner-
-    # concentrated, matching RESEARCH.md's real-footage description of glossy corner
-    # blowout, rather than smeared across the whole face) and `energy` are set explicitly
-    # here, tuned by rendering and measuring actual output HSV against
+    # fixed brightness -- at this 1.5m throw over a small, glossy scene, an unset `.size`
+    # (Blender's 1x1m default) combined with too much energy produces diffuse radiance
+    # bright enough to overexpose the tile body toward white, which silently breaks
+    # eye42.perception.tile_detect's real pip-counting classifier: an overexposed tile
+    # body passes its pip-color threshold too. Both `size` (kept small so specular
+    # highlights stay corner-concentrated, matching RESEARCH.md's real-footage
+    # description of glossy corner blowout, rather than smeared across the whole face)
+    # and `energy` are set explicitly here so rendered output HSV stays within
     # tile_detect.py's own thresholds (_TILE_HSV_HIGH's V<=210, _PIP_HSV_LOW's V>=165),
     # not derived from an untested formula alone.
     light.size = 0.4

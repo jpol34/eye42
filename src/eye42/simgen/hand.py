@@ -202,8 +202,8 @@ def hand_parts(pose: HandPose) -> List[RigidPart]:
 
     # Thumb: angled off the near side of the palm, shorter, same curl amount. Only the
     # extra 0.01m offset scales with spread -- scaling the whole (palm_half_width + 0.01m)
-    # term (an earlier version here did) moved the thumb's ANCHOR itself, not just its
-    # spacing, visibly detaching it from the palm at high spread (up to ~2.4cm gap).
+    # term instead would move the thumb's ANCHOR itself, not just its spacing, visibly
+    # detaching it from the palm at high spread (up to ~2.4cm gap).
     thumb_base_local = (palm_local_x * 0.6, -(_PALM_HALF_EXTENTS_M[1] + 0.01 * spread_scale), 0.0)
     parts.extend(
         _digit_parts(

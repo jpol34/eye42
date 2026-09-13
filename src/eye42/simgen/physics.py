@@ -1,12 +1,11 @@
 """Headless MuJoCo physics scene: a table plane plus one free rigid body per tile.
 
-MuJoCo (not PyBullet, per the original plan) is the physics backend here: PyBullet has
-no prebuilt wheel for this platform/Python version and would require installing a C++
-build toolchain to compile from source, whereas MuJoCo ships one and its box-box collider
-(the exact shape needed for many thin, flat tiles in contact) was rewritten and fixed in
-3.12+ -- research this session found this makes it the more robust choice for this
-specific scenario anyway, not just the more available one. See RESEARCH.md's "Standalone
-3D simulation" section.
+MuJoCo, not PyBullet, is the physics backend here: PyBullet has no prebuilt wheel for
+this platform/Python version and would require installing a C++ build toolchain to
+compile from source, whereas MuJoCo ships one and its box-box collider (the exact shape
+needed for many thin, flat tiles in contact) was rewritten and fixed in 3.12+, making it
+the more robust choice for this specific scenario, not just the more available one. See
+RESEARCH.md's "Standalone 3D simulation" section.
 """
 
 from __future__ import annotations

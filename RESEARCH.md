@@ -57,9 +57,8 @@ confounded by each tile's specular-highlight streak, brighter than the true divi
 at this footage's resolution/compression.
 
 **Motion-based discrimination (hands move, resting tile piles don't) -- untested, not
-falsified at the time.** Originally blocked: none of the three files in
-`eye42_game1_videos/` opened (`moov atom not found` for all three). **Since fixed --
-see "Video recovery" below.**
+falsified.** Blocked on video access: none of the three files in `eye42_game1_videos/`
+opened (`moov atom not found` for all three) -- resolved, see "Video recovery" below.
 
 **Net assessment of everything above:** every technique that reduces to "does this
 blob's shape/geometry look tile-like" (by whatever metric) keeps landing on hand/shadow
@@ -154,9 +153,9 @@ smarter shape statistic:
    generation/compositing pipeline, a training run) but the only approach that solves the
    splitting problem itself rather than avoiding it.
 
-This item was explicitly "not required for ordinary trick-by-trick play." Treat it as
-its own scoped project (plan it properly, likely across a couple of sessions) rather
-than something to bolt onto the existing perception module in passing.
+This item is not required for ordinary trick-by-trick play. Treat it as its own
+scoped, substantial project (plan it properly) rather than something to bolt onto the
+existing perception module in passing.
 
 ## Status
 
@@ -235,11 +234,11 @@ fix (allow overlap per the density evidence above, add z-order occlusion-clippin
 `SyntheticTileInstance.mask`) is scoped but was superseded by the motion-tracking pivot
 below before being applied.
 
-## Pivot: tracking dominoes through motion, not just static clusters
+## Tracking dominoes through motion, not just static clusters
 
-Mid-session, the goal was reframed: beyond splitting a static touching-tile cluster, can
-the pipeline identify/track a domino through active motion (a shuffle, a slide, the act
-of a tile being played), reviewing actual video to ground this rather than guessing.
+Beyond splitting a static touching-tile cluster, the pipeline needs to identify/track a
+domino through active motion (a shuffle, a slide, the act of a tile being played) --
+grounded in review of actual video, not assumption.
 
 **Physical constraint, not a software limitation:** a domino's pip pattern is genuinely
 unrecoverable from a motion-blurred frame at typical webcam shutter speeds -- this is an
@@ -265,8 +264,7 @@ directly than a physics-and-render pipeline, and this codebase already has a rel
 precedent to build from: `EventSegmenter`'s existing motion-history machinery (built for
 seat attribution, see `tile_detect.py`).
 
-**Real motion video was needed to pursue this at all, and was blocked, then unblocked --
-see "Video recovery" below.**
+**Real motion video is needed to pursue this at all; see "Video recovery" below.**
 
 ## Motion-tracking design research (nine questions, external + real-footage)
 
@@ -326,11 +324,11 @@ like these tiles -- the BOP Challenge 2020 benchmark found switching from flat-s
 synthetic renders to ray-traced PBR rendering swung detection accuracy from 6.1% to 64.0%
 on reflective, texture-less objects, a case much closer to this project's tiles than the
 TCG-AR/cut-paste-learn precedents cited above (whose objects weren't glossy). Separately,
-the project's goal changed mid-session from "extract 3D signal from the real camera" (where
-the conclusion above still holds -- monocular pose inference from this camera is genuinely
-not viable, see "3D vs 2D" further below) to "build a standalone 3D simulation, independent
-of the real camera, for training/validation data and eventually interactive/VR use" -- a
-different goal the paragraph above never evaluated.
+this applies to "extract 3D signal from the real camera" (where the conclusion above still
+holds -- monocular pose inference from this camera is genuinely not viable, see "3D vs 2D"
+further below), not to the distinct goal of "build a standalone 3D simulation, independent
+of the real camera, for training/validation data and eventually interactive/VR use," which
+the paragraph above never evaluated.
 
 **Tracking algorithm.** Standard MOT (SORT/DeepSORT/ByteTrack) is built for visually
 distinguishable objects with mostly-divergent trajectories; domino tiles are the opposite
@@ -440,9 +438,7 @@ finalized, not an assumption either way.
 ## Video recovery
 
 All three files in `eye42_game1_videos/` failed to open (`moov atom not found`) --
-previously documented (wrongly) as only affecting the one file already named
-"corrupted." Diagnosed and fully repaired this session, not just described as a future
-task:
+affects all three, not just the one file named "corrupted." Diagnosed and repaired:
 
 - **Diagnosis:** a raw box-level scan showed all three files have a fully intact `mdat`
   box spanning virtually the entire file (397-844MB) -- the actual encoded video data
@@ -471,55 +467,54 @@ task:
   `imageio-ffmpeg` (pip-installed, bundles a static `ffmpeg` binary) was used for the
   repair; no system-wide ffmpeg install was needed or made.
 
-## Audio recording bug found and fixed (`AudioRecorder`)
+## Audio recording duration drift (`AudioRecorder`)
 
-While cross-checking the repaired videos' duration against their paired `.wav`
-recordings, found a real, reproducible discrepancy: `game1_boundary` video runs 561.08s
-but its audio is only 506.7s (54.4s / 9.7% short); `game1_final` video runs 617.88s but
-its audio is only 515.6s (102.3s / 16.6% short). Both audio files are otherwise valid,
-readable WAVs -- not corrupted, just short.
+Cross-checking the repaired videos' duration against their paired `.wav` recordings shows
+a real, reproducible discrepancy: `game1_boundary` video runs 561.08s but its audio is
+only 506.7s (54.4s / 9.7% short); `game1_final` video runs 617.88s but its audio is only
+515.6s (102.3s / 16.6% short). Both audio files are otherwise valid, readable WAVs -- not
+corrupted, just short.
 
-**Root cause, found by reading `tools/live_view.py`, not assumed:**
-`AudioRecorder._on_audio` (the `sounddevice` input callback) completely ignored the
+**Root cause:** `AudioRecorder._on_audio` (the `sounddevice` input callback) ignored the
 `status` argument the library passes specifically to report a dropped/overflowed
-callback, and unlike `VideoRecorder` (which already has a measured-necessary wall-clock
-catch-up mechanism for exactly this kind of thread contention under perception load),
-had no equivalent compensation -- a dropped callback just silently shrank the WAV file
-with no record of it happening. Ruled out simpler explanations first: `start_consumer`
-spawns a non-blocking thread, so video/audio recorder construction happens within
-milliseconds of each other, not tens of seconds apart, and the shutdown order
-(`camera.stop()` -> `recorder.close()` -> `audio_recorder.close()`) would if anything
-make audio slightly longer at the tail, not dramatically shorter -- neither explains a
-54-102s deficit. The size and direction of the deficit (larger on the longer session)
-matches cumulative small dropped-buffer loss under sustained contention, the same
-category of problem `VideoRecorder`'s own docstring already documents as measured, real,
-and significant enough to require a dedicated fix.
+callback, and unlike `VideoRecorder` (which has a measured-necessary wall-clock catch-up
+mechanism for exactly this kind of thread contention under perception load), had no
+equivalent compensation -- a dropped callback just silently shrank the WAV file with no
+record of it happening. Simpler explanations don't fit: `start_consumer` spawns a
+non-blocking thread, so video/audio recorder construction happens within milliseconds of
+each other, not tens of seconds apart, and the shutdown order (`camera.stop()` ->
+`recorder.close()` -> `audio_recorder.close()`) would if anything make audio slightly
+longer at the tail, not dramatically shorter -- neither explains a 54-102s deficit. The
+size and direction of the deficit (larger on the longer session) matches cumulative small
+dropped-buffer loss under sustained contention, the same category of problem
+`VideoRecorder`'s own docstring already documents as measured, real, and significant
+enough to require a dedicated fix.
 
-**Fixed:** `AudioRecorder` now tracks wall-clock elapsed time against samples actually
-written, padding with silence whenever a gap opens up (mirroring `VideoRecorder`'s own
-padding-to-catch-up design) so a session's WAV duration keeps matching real elapsed time
-regardless of dropped callbacks, and logs a count of flagged callbacks on `close()`
-rather than staying silent. Verified with a real-time-paced simulated dropped callback:
-written duration tracked real elapsed time to within normal scheduling jitter. Note: the
-audio already lost in the two existing recordings is **not recoverable** -- those
-samples were genuinely never written, unlike the video's `moov`/VOL indexing problem
-where all the real data was intact. This fix only prevents the same loss in future
-sessions; it doesn't reconstruct what's already missing, and because the loss was likely
-many small drops scattered through the session rather than one contiguous gap, no single
-global time-shift will cleanly re-sync the existing two files to their video throughout.
+**Current behavior:** `AudioRecorder` tracks wall-clock elapsed time against samples
+actually written, padding with silence whenever a gap opens up (mirroring
+`VideoRecorder`'s own padding-to-catch-up design) so a session's WAV duration keeps
+matching real elapsed time regardless of dropped callbacks, and logs a count of flagged
+callbacks on `close()` rather than staying silent. Verified with a real-time-paced
+simulated dropped callback: written duration tracked real elapsed time to within normal
+scheduling jitter. The audio already lost in the two existing recordings is **not
+recoverable** -- those samples were genuinely never written, unlike the video's
+`moov`/VOL indexing problem where all the real data was intact. This only prevents the
+same loss going forward; it doesn't reconstruct what's already missing, and because the
+loss was likely many small drops scattered throughout rather than one contiguous gap, no
+single global time-shift will cleanly re-sync the existing two files to their video.
 
-## Real play events, finally found -- and two prior findings corrected
+## Real play event timing
 
-Two prior passes (above) failed to find an isolated single-tile play by sorting frames by
-raw motion magnitude -- that strategy structurally can't work, because Texas 42 is
-trick-taking (tiles are tossed loosely to a central trick area, never a connected line --
-see "Domino object physical properties" below), so the correct spatial prior is the
-table's centre, and shuffles have to be separated from plays by *extent and duration*, not
-magnitude. Re-searching on that basis (masked motion inside/outside the calibration quad,
-event = burst bracketed by quiet, adjudicated by eye) found nine confirmed plays and one
-complete four-tile trick traced start to finish (`game1_boundary.mp4` f3190-f3735).
+Sorting frames by raw motion magnitude cannot find an isolated single-tile play --
+Texas 42 is trick-taking (tiles are tossed loosely to a central trick area, never a
+connected line -- see "Domino object physical properties" below), so the correct spatial
+prior is the table's centre, and shuffles have to be separated from plays by *extent and
+duration*, not magnitude. Searching on that basis (masked motion inside/outside the
+calibration quad, event = burst bracketed by quiet, adjudicated by eye) found nine
+confirmed plays and one complete four-tile trick traced start to finish
+(`game1_boundary.mp4` f3190-f3735).
 
-**Two things this session previously got wrong, now corrected by direct measurement:**
+**Two corrections to earlier findings in this document, from direct measurement:**
 
 - **The footage is not really 25fps of information.** Both files are 25fps CFR containers
   holding runs of 2-3 duplicate frames; real content rate is ~8-13fps, so a play is only
@@ -557,7 +552,7 @@ size or duration can separate a real play from a meaningless nudge -- only a bef
 full-table-state diff can. This confirms `EventSegmenter`'s existing settle-debounce
 architecture isn't just the cheaper choice, it's the only one the footage supports.
 
-**A genuine, previously-unknown gap:** the calibration quad only covers the central trick
+**A real gap:** the calibration quad only covers the central trick
 area. Racks, won-trick piles, and tiles from the deal/draw regularly land entirely outside
 it (e.g. a tile at boundary f5210, well past the W corner). Any design assuming "everything
 game-relevant sits on the rectified plane" is wrong today; either widen the calibration or
@@ -647,15 +642,15 @@ after the above, not before. This decouples "when did a play happen" (settle-deb
 authoritative for this) from "what tile was it" (can resolve earlier than settling, with
 the debounce as a backstop, never worse than today).
 
-## Standalone 3D simulation: from "extract 3D from the real camera" to "build a 3D world"
+## Standalone 3D simulation
 
-Mid-session the goal changed from "can 3D information be extracted from the single real
-camera" (researched and answered above/below: no, not usefully -- see "3D vs 2D") to a
-different, larger goal: **build a standalone, high-fidelity 3D physics + rendering
-simulation of a Texas 42 game -- a game-engine/VR-like environment, functioning
-independently, which eye42's perception program can observe and interact with** to train,
-test, and experiment against, rather than relying on scarce real footage. This section is
-the synthesis of that research thread.
+Distinct from "can 3D information be extracted from the single real camera" (answered
+above/below: no, not usefully -- see "3D vs 2D"), this is a different, larger goal:
+**build a standalone, high-fidelity 3D physics + rendering simulation of a Texas 42
+game -- a game-engine/VR-like environment, functioning independently, which eye42's
+perception program can observe and interact with** to train, test, and experiment
+against, rather than relying on scarce real footage. This section is the synthesis of
+that research thread.
 
 ### 3D vs 2D for extracting information from the *real* camera (settled, separate question)
 
@@ -726,11 +721,10 @@ not resolved here.
 
 ### Hardware: no GPU is a procurement decision, not a fixed constraint
 
-Direct inspection found the actual dev machine (a 4-core/8-thread ultrabook, 16GB RAM,
-integrated graphics only, no PCIe slot) is a harder constraint than "no GPU" implies --
-there's nowhere to add a card. The earlier "solo hobbyist, no GPU, CPU-only" framing this
-session used for prior research passes was itself hardware-determined, not merit-based.
-Renting is confirmed cheap: consumer GPU rental (RunPod, Vast.ai) runs roughly
+The actual dev machine (a 4-core/8-thread ultrabook, 16GB RAM, integrated graphics only,
+no PCIe slot) is a harder constraint than "no GPU" implies -- there's nowhere to add a
+card. The "no GPU, CPU-only" framing used in this document's earlier research reflects
+that hardware limit, not a merit-based choice. Renting is confirmed cheap: consumer GPU rental (RunPod, Vast.ai) runs roughly
 $0.30-0.70/hour for a 4090-class card; a full 10,000-frame Tier-2-quality render batch
 (see fidelity tiers below) costs on the order of $20-35 and a few hours to a day, versus
 roughly $185-280 and 7-10 days on Railway's CPU-only pricing for the same job (Railway CPU
@@ -778,17 +772,16 @@ A structural trick to cut total render cost roughly 10x: split output into **Tra
 and **Track B** (short curated 25fps validation clips of specific events -- a play, a
 sweep, a shuffle -- only 2-5 minutes total needed). Track B is also the strongest concrete
 argument for building this at all: it can manufacture on demand, with perfect labels, the
-exact clean single-tile play event that two independent real-footage searches this session
-initially failed to find.
+exact clean single-tile play event that two independent real-footage searches (above)
+failed to find.
 
-### Hand/manipulation fidelity: re-examined against real footage, and the first answer was wrong
+### Hand/manipulation fidelity
 
-An initial pass recommended skipping dexterous hand simulation entirely (static canned
-poses on a kinematic proxy), reasoning that nothing in the perception pipeline tracks
-finger-level detail. **Re-examined directly against real footage per explicit pushback,
-and the initial premise didn't survive contact with the evidence:** hand-tile contact is
-not brief or occasional -- it's present in 94-100% of sampled frames during play and
-shuffle phases across both videos, with contact-free gaps typically under a second.
+Skipping dexterous hand simulation entirely (static canned poses on a kinematic proxy) --
+reasoning that nothing in the perception pipeline tracks finger-level detail -- does not
+hold up against real footage: hand-tile contact is not brief or occasional -- it's present
+in 94-100% of sampled frames during play and shuffle phases across both videos, with
+contact-free gaps typically under a second.
 Occlusion is not a simple whole-hand blob either: real footage shows tiles visible through
 finger gaps, forearms (not just hands) occluding large tile groups for extended periods,
 and occlusion patterns shifting meaningfully frame-to-frame (roughly every ~100ms) even
@@ -881,26 +874,25 @@ be relied on to ever produce.
 ## Standalone 3D simulation, Phase 0: built and working
 
 Implemented as `src/eye42/simgen/` -- see ROADMAP.md's "Standalone 3D simulation" section
-for what's built, what's deferred, and known rough edges. Two things worth recording here
-because they update earlier research in this same document, not just "what got built":
+for what's built, what's deferred, and known rough edges. Two updates to earlier research
+in this same document:
 
-**PyBullet, the plan's original physics engine choice, could not actually be installed** --
-no prebuilt wheel exists for this platform/Python version, and building from source needs
-a C++ toolchain not worth installing for this. **MuJoCo >=3.12 (already named in this
-document as an acceptable alternative) was used instead**, and worked well: real Windows
-wheels, no instability with many thin tiles in contact once the push-force controller was
-correctly tuned (an early version pushed all four trick tiles to the exact same point with
-a force stronger than table friction could safely dissipate, producing a genuine MuJoCo
-QACC-instability warning -- fixed by jittering trick/pile target points and switching to a
-closed-loop, velocity-capped `slide_toward` control instead of a blind constant-force push).
+**PyBullet, this document's original physics engine choice, has no prebuilt wheel for
+this platform/Python version**, and building from source needs a C++ toolchain not worth
+installing for this. **MuJoCo >=3.12 (already named here as an acceptable alternative) is
+used instead**: real Windows wheels, no instability with many thin tiles in contact once
+the push-force controller is correctly tuned (an early version pushed all four trick tiles
+to the exact same point with a force stronger than table friction could safely dissipate,
+producing a genuine MuJoCo QACC-instability warning -- fixed by jittering trick/pile
+target points and switching to a closed-loop, velocity-capped `slide_toward` control
+instead of a blind constant-force push).
 
-**The BlenderProc integration risk flagged by plan review did not materialize the way
-expected, and turned out better than planned.** Plain `bpy` (pip-installable, ~340MB)
-imports and runs a full headless CPU Cycles render directly from a normal Python process
-in under a second for a small scene -- no `blenderproc run` CLI wrapper, no re-executing
-inside a separate Blender-managed interpreter needed at all. The `blenderproc` package
-itself was never installed or needed; `render_photoreal` in `simgen/render.py` drives
-`bpy` directly. This meaningfully de-risks the whole initiative: photoreal rendering is
-available today, in-process, CPU-only, at a few seconds per frame for a modest scene --
-not blocked on GPU rental or a separate render-farm architecture the way earlier research
-worried it might be.
+**The BlenderProc integration risk flagged during planning did not materialize.** Plain
+`bpy` (pip-installable, ~340MB) imports and runs a full headless CPU Cycles render
+directly from a normal Python process in under a second for a small scene -- no
+`blenderproc run` CLI wrapper, no re-executing inside a separate Blender-managed
+interpreter needed at all. The `blenderproc` package itself is not installed or needed;
+`render_photoreal` in `simgen/render.py` drives `bpy` directly. This meaningfully de-risks
+the whole initiative: photoreal rendering is available today, in-process, CPU-only, at a
+few seconds per frame for a modest scene -- not blocked on GPU rental or a separate
+render-farm architecture.

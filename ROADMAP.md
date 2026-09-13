@@ -49,86 +49,15 @@ entry elsewhere in this file, not restated here):
   clock/frame convention between perception and speech stubs") — inert until
   Phase 3 (speech) exists, which itself needs real recorded audio.
 
-## Where the in-progress Phase 2 work lives
-
-In the `sqlite-telemetry-live-view` worktree (branch
-`worktree-sqlite-telemetry-live-view`). Run `py -m pytest -q` from that
-worktree to run the suite (`src/eye42/engine/tests`,
-`src/eye42/perception/tests`, `src/eye42/simgen/tests`) — pass `-m "not slow"`
-to skip the one real-physics-over-a-full-hand integration test.
-
 ## Standalone 3D simulation (`eye42.simgen`)
 
-Phase 0 (a working skeleton, not the full fidelity investment) is built: a
-headless MuJoCo physics scene (`simgen/physics.py`), a director that scripts a
-full 7-trick hand by reusing `engine.trick`/`engine.probability`'s own tested
-legality and playout logic (`simgen/director.py`, `simgen/trajectory.py`), a
-pinhole-camera projection + occlusion-correct mask computation
-(`simgen/render.py`) that fixes `synth_data.py`'s documented occluded-mask
-bug using real 3D z-order, and a working headless Blender/Cycles photoreal
-renderer (`render_photoreal`, via plain `bpy` — no `blenderproc` package
-needed; it runs standalone in-process, no `blenderproc run` CLI wrapper
-required, contrary to what was expected going in). `tools/gen_sim_dataset.py`
-CLI ties it together. See RESEARCH.md's "Standalone 3D simulation" section
-for the full design rationale.
-
-Each tile's top face carries a pip/divider texture (`_tile_top_texture` in
-`simgen/render.py`, reusing `synth_data.py`'s `pip_layout_fractions` as the
-shared layout convention) so rendered tiles show the correct pip count and
-divider line, not a flat glossy box. A six's pips render as 3 dots across
-the length axis by 2 rows down the width axis, matching the Unicode
-Standard's own Domino Tiles reference glyphs (verified directly against
-them) — an earlier version rendered this transposed (2 columns of 3)
-because `pip_layout_fractions`' `(u, v)` means (width-fraction, length-
-fraction) per `synth_data.py`'s own stacked-halves convention, and this
-texture's side-by-side halves need those axes swapped, not used as-is;
-every other pip count (0-5) is unaffected by that swap. `render_photoreal()`
-also applies
-post-render sensor noise (`_add_sensor_noise`, randomized magnitude per
-call) so an artificially noise-free image isn't itself a synthetic-data
-tell — an unmeasured placeholder, not real calibration (see below).
-
-`render_photoreal()`'s lighting was badly overexposed until it was fixed: a
-300W area light with its emitting size left at Blender's unset 1×1m default,
-1.5m above a ~1.3m scene, produced diffuse radiance roughly 8x scene-linear
-"white" — a rendered tile body came back HSV saturation=9/value=253 (nearly
-white) instead of a saturated green, which silently broke
-`eye42.perception.tile_detect`'s real pip-counting classifier (verified by
-hand: 0/5 tiles correctly identified against these renders before the fix,
-5/7 after — the remaining 2 misses are specular-highlight ambiguity on a
-blank/near-blank half, a real difficulty real photography has too, not a
-simulation-only defect). Fixed by setting the light's `.size` and `.energy`
-explicitly (tuned by rendering and measuring actual output HSV against
-`tile_detect.py`'s own thresholds, not a formula alone) and setting
-`scene.view_settings.view_transform` explicitly to `"Standard"` rather than
-relying on Blender's version-dependent factory-template default. A
-regression test (`test_photoreal_render_body_and_pip_colors_land_within_perceptions_own_thresholds`)
-pins the rendered body value exactly against `tile_detect.py`'s real
-`_TILE_HSV_HIGH` ceiling, and body saturation against a deliberately
-tighter guard-band above `_PIP_HSV_HIGH`'s ceiling (not literally
-`tile_detect.py`'s own, looser saturation floor) -- the test's own
-docstring spells out which bound is which and why.
-
-A Phase 1 hand+forearm occluder rig is also built (`simgen/hand.py`): 13
-rigid boxes (2 forearm segments, palm, 2 thumb segments, 4 fingers × 2
-segments each) placed by plain-numpy forward kinematics (`hand_parts`), not
-a bpy armature/skinned mesh — deliberate, so `render_ground_truth` stays
-usable without the `sim-render` extra (a skinned mesh's deformed vertices
-can't be projected without `bpy`). `place_hand` gives one parameterized
-reach-place-retract path per play/sweep, sampled at a randomized late phase
-(released-through-retracting, matching that `FrameSnapshot`s are post-settle
-moments, not mid-slide); `tools/gen_sim_dataset.py`'s `--scenes` track poses
-a hand at a random table location with independent probability instead
-(unconstrained domain randomization, no play/sweep to attach to). Hand/
-forearm parts participate in the SAME occlusion computation
-`render_ground_truth` uses for tile-tile occlusion — one global depth sort
-over tiles and occluder parts together, each part's own projected convex
-hull painted individually (not merged into one whole-hand blob), so gaps
-between fingers survive as real gaps in a tile's `visible_fraction`/mask,
-matching real footage. `render_debug_preview` (the default renderer
-`gen_sim_dataset.py` uses) and `render_photoreal` both draw occluders
-through the same code path, so a generated image and its ground-truth
-labels can never disagree about whether a hand is present.
+A Phase 0 skeleton (physics, a scripted-hand director reusing tested engine
+logic, occlusion-correct rendering including a Blender/Cycles photoreal path,
+YOLO-seg + JSON ground-truth export) and a Phase 1 hand/forearm occluder rig
+are built. See RESEARCH.md's "Standalone 3D simulation" section for the
+architecture and design rationale, and the modules themselves
+(`simgen/render.py`, `simgen/hand.py`, `simgen/ground_truth.py`) for how each
+piece works today.
 
 **Deferred, explicitly out of scope for Phase 1** (see RESEARCH.md's
 "Hand/manipulation fidelity" section for the full recommendation this is a
@@ -144,67 +73,61 @@ sleeve variety; shuffle-phase hand modeling (RESEARCH.md explicitly licenses
 low fidelity there).
 
 **Known rough edges (hand rig):** occlusion uses one constant depth per box
-part (matching the pre-existing tile-tile approach), not a true per-pixel
-depth buffer — accurate for a palm hovering over a tile (the common case
-given this camera's angle) but can misorder a part extending horizontally
-toward the camera across a nearer tile; bounded to roughly a tile's own
-size by using 2 segments per finger/forearm, named here as the approximation
-to revisit (a per-pixel depth buffer) if it ever proves to matter.
-`ground_truth.py`'s `_polygons_from_mask` now emits one YOLO-seg label line
-per disjoint visible fragment of a tile (matching ultralytics' own
-mask-to-label converter's convention of one line per contour, same class —
-not a novel scheme), so a tile split into two visible blobs by a finger no
-longer silently drops the smaller piece's genuinely-visible pixels;
-confirmed against a real simulated hand (14 of 36 frames in one hand
-produced at least one fragment split). This means `gen_sim_dataset.py`'s
-label semantics now diverge from `tools/gen_synthetic_tiles.py`'s own
-`_polygon_from_mask` (deliberately not touched — that compositor's own
-per-tile mask is an unsubtracted solid paste region and structurally can't
-produce disjoint fragments in the first place, so it stays single-line-
-per-tile): if the two data sources are ever combined into one training run,
-whatever consumes them needs to know "one label line" doesn't mean "one
-tile instance" for data from this module. `RETR_EXTERNAL` still won't
-split out a true enclosed hole (an occluder entirely inside a tile's
-silhouette, touching no edge) — a separate, narrower, still-unaddressed
-case. `_SKIN_COLOR` is an unmeasured placeholder tuned only for contrast
-against this scene's table/lighting, not real skin tones.
+part (matching the tile-tile approach), not a true per-pixel depth buffer —
+accurate for a palm hovering over a tile (the common case given this
+camera's angle) but can misorder a part extending horizontally toward the
+camera across a nearer tile; bounded to roughly a tile's own size by using 2
+segments per finger/forearm, named here as the approximation to revisit (a
+per-pixel depth buffer) if it ever proves to matter. `RETR_EXTERNAL`-based
+mask extraction won't split out a true enclosed hole (an occluder entirely
+inside a tile's silhouette, touching no edge) — a separate, narrower,
+unaddressed case. `_SKIN_COLOR` is an unmeasured placeholder tuned only for
+contrast against this scene's table/lighting, not real skin tones.
 
-**Deferred, explicitly out of scope for Phase 0** (see RESEARCH.md and the
-plan this was built from): measured roughness/gloss calibrated against real
-footage (pips currently share the body's flat `Roughness=0.15`, no separate
-matte/gloss distinction); calibrated lens distortion (RESEARCH.md's Tier 3
-groups this with sensor noise as needing a real checkerboard calibration
-capture, which doesn't exist yet — only that capture-blocked half is still
-deferred; the sensor-noise half above is a plausible, uncalibrated
-placeholder shipped ahead of it); GPU-rented bulk generation;
-retraining/evaluating the YOLOv8-seg model against this new data source.
+**Deferred, explicitly out of scope for Phase 0** (see RESEARCH.md and
+"Blocked on real footage" above): measured roughness/gloss calibrated
+against real footage (pips currently share the body's flat `Roughness=0.15`,
+no separate matte/gloss distinction); calibrated lens distortion (a real
+checkerboard calibration capture doesn't exist yet; post-render sensor
+noise is a plausible, uncalibrated placeholder shipped ahead of it); GPU-
+rented bulk generation; retraining/evaluating the YOLOv8-seg model against
+this new data source.
 
 **Known rough edges to tune, not fixed yet:** `tile_geometry.py`'s
 `TABLE_SIZE_M` and `trajectory.py`'s seat rack/won-pile zone coordinates are
-still placeholder guesses in absolute meters (no real table measurement or
-camera calibration exists yet — see RESEARCH.md's "calibration.json is a
-homography, not a camera calibration"), though a regression test now pins a
+placeholder guesses in absolute meters (no real table measurement or camera
+calibration exists yet — see RESEARCH.md's "calibration.json is a
+homography, not a camera calibration"), though a regression test pins a
 minimum margin between the table edge and every zone's worst-case reach so
-this can't silently regress. `default_camera()`'s oblique *angle* is not a
-guess — its near/far edge ratio is verified against `calibration.json`'s real
-corner points — but its distance/`focal_px` (how tightly it frames the table)
-is still untuned against real footage.
+this can't silently regress. `default_camera()`'s oblique *angle* is
+verified against `calibration.json`'s real corner points, but its
+distance/`focal_px` (how tightly it frames the table) is still untuned
+against real footage.
 
 ## Not yet built
 
-- **Phase 2 — perception pipeline** (camera → tile/event stream): one-time
-  4-corner homography rectification; per-tile crop → 28-class identity
-  classifier (small template-match or CNN, trained on the real physical set —
-  not Hough-circle pip counting, which fails on the spinner pin and blanks);
-  player attribution from observed hand-to-table motion (not turn order or
-  fixed seat quadrants alone — the trick winner, and therefore whose turn is
-  next, is sometimes undetermined while trump is ambiguous); settle-time-
-  debounced event segmentation with explicit trick-sweep handling; a
-  shuffle/reshuffle detector for hand/game boundaries, independent of "7
-  tricks completed" (won't reliably happen in a set/concession hand);
+- **Phase 2 — perception pipeline, mostly built as separate tested modules,
+  not yet assembled into one live camera-in/event-out entry point.** Built:
+  homography rectification (`TableRectifier`), tile localization, 28-class
+  identity classification (`OpenCVTileClassifier` — color-threshold pip
+  counting, not the template-match/CNN originally envisioned; avoids
+  Hough-circle pip counting's spinner-pin/blank failure modes), settle-
+  time-debounced event segmentation with explicit trick-sweep handling and
+  motion-trail player attribution (`EventSegmenter` — player attribution
+  matters because turn order/fixed seat quadrants alone can't resolve who's
+  next while the trick winner, and therefore trump, is still ambiguous), and
+  a shuffle/reshuffle hand-boundary detector independent of "7 tricks
+  completed" (`HandBoundaryDetector`). A second, tested touching-tile-
+  cluster segmenter (`tile_segment.py`, a trained YOLOv8-seg ONNX model)
+  exists for fanned/boneyard tiles merging into one contour, but isn't
+  wired into `tile_detect.py` or `tools/live_view.py`. Not built:
   concession/redeal entered on a perception signal (mass tile motion, tiles
-  flipping, trick-pile mixing), not on the engine's own arithmetic lock,
-  since real concessions happen earlier than mathematical certainty.
+  flipping, trick-pile mixing) — `IrregularEndSignal` exists on the engine
+  side but nothing in perception produces it yet; concessions need this
+  because they happen earlier than the engine's own arithmetic certainty.
+  What's left, concretely: wire `tile_segment.py` in for the touching-
+  cluster case, build the concession/redeal perception signal, and assemble
+  everything into one live pipeline entry point.
 - **Phase 3 — speech layer** (bidding/trump from audio): continuous local VAD
   + Whisper STT (no cloud API) against a closed vocabulary, scored by
   bid-rotation plausibility × ASR confidence rather than accepting on a bare
@@ -220,6 +143,10 @@ is still untuned against real footage.
   show state as **provisional** wherever it depends on something not yet
   confirmed (trump not yet locked, a hand-end classification pending the next
   hand's dealer), not claim live certainty it can't back up in the moment.
+  `tools/live_view.py` already serves a Flask page today, but its own
+  docstring disclaims it as a test-session observability tool, not this
+  planned product dashboard — worth checking for reusable pieces, not a
+  substitute for building this.
 - **Phase 4b remainder — probability visualization**: the engine
   (`engine/probability.py`) is built and tested; the display layer itself
   isn't — a two-team horizontal bar (bid-team % vs. defense %) updating per
@@ -227,9 +154,11 @@ is still untuned against real footage.
   count-points as a secondary stat. Slots into the Phase 4 dashboard once
   that exists.
 - **Phase 5 (stretch, only if needed) — robustness hardening**: a heavier
-  detector (e.g. YOLO) or multi-camera angles, but only in response to a
-  specific, reproducible failure mode that actually shows up in real
-  validation footage — not speculatively.
+  detector already exists and is tested (`tile_segment.py`'s YOLOv8-seg
+  model, for the touching-tile-cluster failure mode) but isn't wired into
+  the live pipeline (see Phase 2) — wire it in only in response to a
+  specific, reproducible failure mode real validation footage actually
+  shows, not speculatively; multi-camera angles have no code yet at all.
 
 ## Implementation notes for not-yet-built phases
 
@@ -336,31 +265,20 @@ is still untuned against real footage.
   (`confidence * plausibility`) is a working precedent for
   confidence-weighted speech scoring, so the idea isn't unprecedented — it
   just isn't wired into the engine layer, and shouldn't be guessed at before
-  there's a concrete consumer. `TrumpCalled` is a real, tested, dual-interface
-  event (dispatched in `hand.py`'s `ingest`, exercised end to end in
-  `test_telemetry.py`) alongside the direct `call_trump()` method, not dead
-  code — no decision needed there. `TilePlayed.confidence` has no reads in
-  `engine/` today, but keep it dormant rather than cut it: `EventSegmenter`
-  now computes it as a real mean-of-agreeing-frames figure (see
-  `_resolve_identity`), not just a placeholder default, and it's exactly the
-  signal the engine-side reconciliation-on-conflict idea above would need
-  once built.
+  there's a concrete consumer.
 - **No shared clock/frame convention between perception and speech stubs** —
   `perception.tile_detect` timestamps with `frame_index: int` (a per-poll-loop
-  counter in `tools/live_view.py`'s `Session.on_frame`, unrelated to true
-  camera FPS, which itself varies under load), `speech.bid_parser`'s
-  `Utterance` with `start_time`/`end_time` in seconds (currently unproduced —
-  the whole module is `NotImplementedError` stubs). Needed before a played
-  tile and a spoken bid can be ordered against each other; currently inert,
-  since nothing yet compares the two. `EventStore.log_event` already stamps
-  every ingested event with a real wall-clock `time.time()`
-  (`perception`/`engine`'s existing telemetry sink) — the likely anchor for
-  both sides once speech exists, rather than a new mechanism. One real wrinkle
-  for whoever designs this: `tools/live_view.py` records video and audio as
-  two independently wall-clock-paced but separate files with no recorded
-  shared T0, so there's an unquantified startup-latency skew between them to
-  account for. Not yet defined; depends on Phase 3 (speech) actually
-  existing, which is separately already gated on real recorded audio.
+  counter, unrelated to true camera FPS, which itself varies under load),
+  `speech.bid_parser`'s `Utterance` with `start_time`/`end_time` in seconds
+  (unproduced today — the whole module is `NotImplementedError` stubs).
+  Needed before a played tile and a spoken bid can be ordered against each
+  other; inert until Phase 3 (speech) exists. `EventStore.log_event`'s
+  existing wall-clock `time.time()` stamp on every ingested event is the
+  likely anchor for both sides, rather than a new mechanism. One wrinkle for
+  whoever designs this: `tools/live_view.py` records video and audio as two
+  independently wall-clock-paced but separate files with no recorded shared
+  T0, so there's an unquantified startup-latency skew between them to
+  account for.
 - **`perception.tile_detect`'s `TileIdentityClassifier.classify` needs a real
   implementation** — its interface already returns ranked candidates, not a
   single best guess, matching `TrumpHypothesisTracker`'s weighted-candidate
@@ -391,23 +309,19 @@ is still untuned against real footage.
   fully built, tested, and correct, but have zero production callers today —
   they're waiting on a perception signal (a seat number, a real deal
   observation) that doesn't exist yet. Kept as proven-but-dormant rather than
-  cut; revisit once Phase 2 exists to see whether they're still the right
-  shape.
+  cut; revisit once perception can produce that signal to see whether
+  they're still the right shape.
 - **`observe_next_dealer`'s unvalidated seat number** and **`trick.py`'s
   dead `entitled_leader` field** — no guard built for either, since nothing
   upstream can currently produce the input shape that would need one.
-- **`tools/live_view.py`'s REPL can't be launched from an automated/background
-  process directly** — its input loop is `for line in sys.stdin`, which hits
-  EOF and exits immediately if stdin isn't a real terminal (e.g. launched via
-  a background shell call), with no error, just a silent near-instant exit.
-  Workaround today: a small supervisor script that spawns it via
-  `subprocess.Popen(..., stdin=subprocess.PIPE)` and keeps that pipe open by
-  polling a control file for a `"quit"` sentinel, writing `"quit\n"` to the
-  child's stdin to trigger a clean shutdown rather than a force-kill (a
-  force-kill skips `cv2.VideoWriter`'s cleanup on Windows, leaving the
-  in-progress video segment with a missing moov atom — unplayable, though
-  its audio track is unaffected). Not built: an actual non-interactive launch
-  mode (e.g. a `--no-repl` flag) that wouldn't need this workaround.
+- **`tools/live_view.py` has no way to issue commands (e.g. a bid) from a
+  background/automated process.** Its command input is an interactive
+  `for line in sys.stdin` REPL loop, which hits EOF and exits immediately if
+  stdin isn't a real terminal. Clean shutdown from a background process
+  already works today (`SIGTERM`/`SIGINT` are handled and trigger the same
+  cleanup as a normal REPL exit) — what's missing is a non-interactive way to
+  issue REPL-style commands, e.g. a control file or socket read alongside
+  `--no-repl`.
 
 ## Explicitly out of scope for now
 

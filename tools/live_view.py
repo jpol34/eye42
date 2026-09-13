@@ -168,20 +168,19 @@ class VideoRecorder:
     from the SQLite log's per-play snapshots, which capture only the
     instant a play settles, not the continuous footage in between.
 
-    Wall-clock-paced, not call-paced: the consumer thread driving this
-    wakes up on a best-effort schedule that real thread/GIL contention
-    (perception running concurrently) can delay unpredictably -- confirmed,
-    not assumed, by measurement (a naive one-write-per-call version fell to
-    half the target frame rate under load). This is the standard, if
-    unglamorous, workaround for a real, documented `cv2.VideoWriter`
-    limitation: it has no timestamp/PTS concept at all and just assumes
-    every ``write()`` call is evenly spaced at the declared fps, so an
-    irregular producer desyncs playback speed unless something else
-    guarantees that assumption holds. Every call compares real elapsed time
-    against the declared fps and writes however many frames (duplicating
-    the current one if behind) are needed to catch up, so the file's own
-    duration (frame_count / fps) always matches real elapsed time
-    regardless of how irregularly this gets called.
+    Wall-clock-paced, not call-paced: the consumer thread driving this wakes
+    up on a best-effort schedule that real thread/GIL contention (perception
+    running concurrently) can delay unpredictably -- a naive one-write-per-
+    call approach falls to half the target frame rate under load. This is
+    the standard, if unglamorous, workaround for a real, documented
+    `cv2.VideoWriter` limitation: it has no timestamp/PTS concept at all and
+    just assumes every ``write()`` call is evenly spaced at the declared
+    fps, so an irregular producer desyncs playback speed unless something
+    else guarantees that assumption holds. Every call compares real elapsed
+    time against the declared fps and writes however many frames
+    (duplicating the current one if behind) are needed to catch up, so the
+    file's own duration (frame_count / fps) always matches real elapsed
+    time regardless of how irregularly this gets called.
 
     Padding is driven off ``frame_id`` (see ``Camera.latest_frame``), not
     bare elapsed time, so a genuinely stalled camera -- not just a slow

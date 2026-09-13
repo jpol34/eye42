@@ -4,11 +4,11 @@ A redeal does not advance the dealer or the hand index; a completed hand
 (including a conceded one) does. Game is won at 7 marks (confirmed scoring mode —
 splash/plunge only make sense in a marks game).
 
-``observe_next_dealer`` implements the plan's own documented-but-previously-
-missing retrospective cross-check: once the *next* hand's dealer is actually
-observed, it either corroborates the previous hand's redeal/concession
-classification or corrects it -- never raises, since an unexpected dealer just
-means the table is ground truth and the engine's prior guess was wrong.
+``observe_next_dealer`` is a retrospective cross-check: once the *next* hand's
+dealer is actually observed, it either corroborates the previous hand's
+redeal/concession classification or corrects it -- never raises, since an
+unexpected dealer just means the table is ground truth and the engine's prior
+guess was wrong.
 """
 
 from __future__ import annotations
