@@ -15,6 +15,47 @@ entries here. This file should always read as "here's what's actually still
 open," never as a log of what used to be open. (The project's build history —
 what was done, when, and why — lives in the pr history for the gh repo)
 
+## Where the in-progress Phase 2 work lives
+
+In the `sqlite-telemetry-live-view` worktree (branch
+`worktree-sqlite-telemetry-live-view`). Run `py -m pytest -q` from that
+worktree to run the suite (`src/eye42/engine/tests`,
+`src/eye42/perception/tests`, `src/eye42/simgen/tests`) — pass `-m "not slow"`
+to skip the one real-physics-over-a-full-hand integration test.
+
+## Standalone 3D simulation (`eye42.simgen`)
+
+Phase 0 (a working skeleton, not the full fidelity investment) is built: a
+headless MuJoCo physics scene (`simgen/physics.py`), a director that scripts a
+full 7-trick hand by reusing `engine.trick`/`engine.probability`'s own tested
+legality and playout logic (`simgen/director.py`, `simgen/trajectory.py`), a
+pinhole-camera projection + occlusion-correct mask computation
+(`simgen/render.py`) that fixes `synth_data.py`'s documented occluded-mask
+bug using real 3D z-order, and a working headless Blender/Cycles photoreal
+renderer (`render_photoreal`, via plain `bpy` — no `blenderproc` package
+needed; it runs standalone in-process, no `blenderproc run` CLI wrapper
+required, contrary to what was expected going in). `tools/gen_sim_dataset.py`
+CLI ties it together. See RESEARCH.md's "Standalone 3D simulation" section
+for the full design rationale.
+
+**Deferred, explicitly out of scope for Phase 0** (see RESEARCH.md and the
+plan this was built from): photoreal material/lighting matched against real
+footage (pip/divider texturing, measured roughness/gloss — tiles currently
+render as a flat glossy green box, no pips); calibrated lens
+distortion/sensor noise; the articulated hand+forearm rig with a keyframed
+gesture library (footage research found this is genuinely needed, not
+optional — tiles currently teleport-slide via a physics-driven push, no hand
+visible at all); GPU-rented bulk generation; retraining/evaluating the
+YOLOv8-seg model against this new data source.
+
+**Known rough edges to tune, not fixed yet:** `tile_geometry.py`'s
+`TABLE_SIZE_M` and `trajectory.py`'s seat rack/won-pile zone coordinates are
+placeholder guesses (no real camera calibration exists yet — see
+RESEARCH.md's "calibration.json is a homography, not a camera calibration"),
+so rendered rack tiles can sit near/past the table plane's rendered edge;
+`render.py`'s `Camera` is a plausible oblique guess, not calibrated to the
+real rig.
+
 ## Not yet built
 
 - **Phase 2 — perception pipeline** (camera → tile/event stream): one-time
@@ -60,9 +101,7 @@ what was done, when, and why — lives in the pr history for the gh repo)
 
 - Phase 2's rectification/localization: OpenCV. Phase 3's STT: local Whisper
   (`faster-whisper`), no cloud API, so recordings never leave the device.
-  Phase 2/4 storage: flat JSON per hand/game (SQLite later only if
-  cross-game analytics are wanted). Phase 4's server: plain HTML/JS or a
-  tiny local Flask/FastAPI process.
+  Phase 4's server: plain HTML/JS or a tiny local Flask/FastAPI process.
 - Numeric acceptance targets once these phases exist, not just "looks
   right": per-tile identity accuracy ≥98% over ≥200 observed tiles (before
   any repair/reconciliation), exact final-score match on ≥3 full real hands,
@@ -77,6 +116,13 @@ what was done, when, and why — lives in the pr history for the gh repo)
 
 ## Known gaps / ideas under consideration
 
+- **`EventSegmenter._confirmed_positions` only grows within a hand, never pruned per
+  trick.** Since Texas 42 tosses every trick's tiles into the same shared central area
+  (confirmed by real-footage review, not a layout game), a play landing within
+  `_POSITION_TOLERANCE` (15px) of an earlier trick's play position in the *same hand*
+  could be treated as already-confirmed and silently missed — worth bounding/pruning
+  per trick rather than per hand, or confirming real trick placements don't cluster
+  this tightly in practice before treating it as a real bug.
 - **Splash/plunge is currently unreachable through live bidding.** The
   correct mechanism — infer splash/plunge from who actually leads the first
   trick under a MARKS contract — needs new state (who led trick 1) and its
@@ -206,6 +252,18 @@ what was done, when, and why — lives in the pr history for the gh repo)
 - **`observe_next_dealer`'s unvalidated seat number** and **`trick.py`'s
   dead `entitled_leader` field** — no guard built for either, since nothing
   upstream can currently produce the input shape that would need one.
+- **`tools/live_view.py`'s REPL can't be launched from an automated/background
+  process directly** — its input loop is `for line in sys.stdin`, which hits
+  EOF and exits immediately if stdin isn't a real terminal (e.g. launched via
+  a background shell call), with no error, just a silent near-instant exit.
+  Workaround today: a small supervisor script that spawns it via
+  `subprocess.Popen(..., stdin=subprocess.PIPE)` and keeps that pipe open by
+  polling a control file for a `"quit"` sentinel, writing `"quit\n"` to the
+  child's stdin to trigger a clean shutdown rather than a force-kill (a
+  force-kill skips `cv2.VideoWriter`'s cleanup on Windows, leaving the
+  in-progress video segment with a missing moov atom — unplayable, though
+  its audio track is unaffected). Not built: an actual non-interactive launch
+  mode (e.g. a `--no-repl` flag) that wouldn't need this workaround.
 
 ## Explicitly out of scope for now
 

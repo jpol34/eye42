@@ -24,18 +24,29 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Dict, List, Optional
 
+from ..telemetry import EventStore, repair_sink
 from .bidding import (
     BiddingError,
     BiddingRound,
     Contract,
     team_of,
 )
-from .events import BidMade, IrregularEndSignal, Passed, TilePlayed, TilesDealt, TrumpCueHeard
+from .events import (
+    BidMade,
+    IrregularEndSignal,
+    Passed,
+    TilePlayed,
+    TilesDealt,
+    TrumpCalled,
+    TrumpCueHeard,
+)
 from .repair import Irregularity, IrregularityKind, RepairLog
 from .scoring import TRICKS_PER_HAND, HandResult, HandScoreTracker
 from .tiles import Tile, effective_suit
 from .trick import PlayViolation, Trick
 from .trump_inference import TrumpHypothesisTracker
+
+LOW_ATTRIBUTION_CONFIDENCE = 0.6  # matches trump_inference.LOW_CONFIDENCE_MARGIN's bar for "too shaky to trust outright"
 
 
 class HandOutcomeKind(Enum):
@@ -51,6 +62,9 @@ class HandError(ValueError):
 @dataclass
 class HandState:
     dealer: int
+    store: Optional[EventStore] = None
+    session_id: str = "default"
+    hand_index: Optional[int] = None
     bidding: BiddingRound = field(init=False)
     trump_tracker: TrumpHypothesisTracker = field(default_factory=TrumpHypothesisTracker, init=False)
     repairs: RepairLog = field(default_factory=RepairLog, init=False)
@@ -71,6 +85,49 @@ class HandState:
 
     def __post_init__(self) -> None:
         self.bidding = BiddingRound(dealer=self.dealer)
+        if self.store is not None:
+            # The default-factory-built RepairLog above has no sink; rebuild
+            # it rather than mutate, since the sink can't be threaded through
+            # a bare `field(default_factory=RepairLog)`.
+            self.repairs = RepairLog(sink=repair_sink(self.store, self.session_id, lambda: self.hand_index))
+
+    # ---- event ingestion (the logging chokepoint) -------------------------
+
+    def ingest(self, event: object, *, frame_path: Optional[str] = None) -> None:
+        """Single entry point for driving a hand from real event objects
+        (``events.py`` dataclasses) -- used by the live-session harness and,
+        later, real perception/speech output. Logs the raw event (if a store
+        is attached) before dispatching, so every event type reaching this
+        method is captured with no per-type logging code to remember. Direct
+        calls to ``bid``/``play_tile``/etc. (as the unit tests do) bypass this
+        and are not logged -- this is the boundary that makes logging
+        automatic, not the individual methods.
+
+        ``frame_path`` lets a camera-backed caller correlate this exact event
+        with the frame that was on the table when it was observed -- the
+        engine itself has no camera knowledge; it just carries the path
+        through to the stored row."""
+        if self.store is not None:
+            self.store.log_event(
+                event, session_id=self.session_id, hand_index=self.hand_index, frame_path=frame_path
+            )
+
+        if isinstance(event, BidMade):
+            self.bid(event.player, event.amount, event.marks)
+        elif isinstance(event, Passed):
+            self.bid_pass(event.player)
+        elif isinstance(event, TrumpCalled):
+            self.call_trump(event.caller, event.trump)
+        elif isinstance(event, TrumpCueHeard):
+            self.hear_trump_cue(event)
+        elif isinstance(event, TilePlayed):
+            self.play_tile(event)
+        elif isinstance(event, TilesDealt):
+            self.record_deal(event)
+        elif isinstance(event, IrregularEndSignal):
+            self.classify_irregular_end(event)
+        else:
+            raise HandError(f"ingest: unrecognized event type {type(event).__name__}")
 
     # ---- bidding -----------------------------------------------------
 
@@ -256,6 +313,20 @@ class HandState:
         return trick.winner == event.player
 
     def _play_tile_now(self, event: TilePlayed) -> None:
+        if event.player_confidence < LOW_ATTRIBUTION_CONFIDENCE:
+            # A shaky guess at *who* played this is recorded as ground truth like
+            # any other observed play (the table is ground truth, never rejected),
+            # but it's flagged here rather than trusted silently -- an attribution
+            # error that's still turn-legal would otherwise feed voids/trump
+            # inference under the wrong seat with nothing to catch it.
+            self.repairs.log_irregularity(Irregularity(
+                kind=IrregularityKind.AMBIGUOUS_ATTRIBUTION,
+                reason=f"seat {event.player} attributed at confidence {event.player_confidence:.2f}",
+                player=event.player,
+                needs_confirmation=True,
+                confidence=event.player_confidence,
+            ))
+
         if self._current_trick is None and len(self.tricks) >= TRICKS_PER_HAND:
             self._refuse_extra_trick(event)
             return
@@ -457,6 +528,45 @@ class HandState:
     def remaining_hand_size(self, player: int) -> int:
         played = sum(1 for p in self._seen_tiles.values() if p == player)
         return max(0, 7 - played)
+
+    # ---- live state (the "game layer" projection) -------------------------
+
+    def live_state(self) -> dict:
+        """Read-only snapshot of what's happening right now, computed from the
+        live objects (never re-derived from the log) -- the shape the live-
+        session viewer polls."""
+        contract = self.contract
+        current_trick = None
+        if self._current_trick is not None:
+            current_trick = {
+                "leader": self._current_trick.leader,
+                "plays": [[p, str(t)] for p, t in self._current_trick.plays],
+            }
+        return {
+            "dealer": self.dealer,
+            "current_bidder": self.bidding.current_bidder,
+            "contract": None if contract is None else {
+                "bidder": contract.bidder,
+                "kind": contract.kind.name,
+                "amount": contract.amount,
+                "trump_caller": contract.trump_caller,
+            },
+            "trump": {
+                "confirmed": self.trump_tracker.confirmed,
+                "best_guess": self.trump_tracker.best_guess,
+            },
+            "current_trick": current_trick,
+            "tricks": [
+                {"winner": t.winner, "plays": [[p, str(tile)] for p, tile in t.plays]}
+                for t in self.tricks
+            ],
+            "bidding_team_points": None if self.scorer is None else self.scorer.bidding_team_points,
+            "outcome_kind": None if self.outcome_kind is None else self.outcome_kind.name,
+            "open_questions": [
+                {"kind": q.kind.name, "reason": q.reason, "player": q.player}
+                for q in self.repairs.open_questions
+            ],
+        }
 
     # ---- result ------------------------------------------------------
 
