@@ -61,8 +61,11 @@ explicitly (tuned by rendering and measuring actual output HSV against
 `scene.view_settings.view_transform` explicitly to `"Standard"` rather than
 relying on Blender's version-dependent factory-template default. A
 regression test (`test_photoreal_render_body_and_pip_colors_land_within_perceptions_own_thresholds`)
-pins the rendered body color against `tile_detect.py`'s actual production
-threshold, not an arbitrary looser number.
+pins the rendered body value exactly against `tile_detect.py`'s real
+`_TILE_HSV_HIGH` ceiling, and body saturation against a deliberately
+tighter guard-band above `_PIP_HSV_HIGH`'s ceiling (not literally
+`tile_detect.py`'s own, looser saturation floor) -- the test's own
+docstring spells out which bound is which and why.
 
 A Phase 1 hand+forearm occluder rig is also built (`simgen/hand.py`): 13
 rigid boxes (2 forearm segments, palm, 2 thumb segments, 4 fingers × 2

@@ -252,9 +252,14 @@ def test_photoreal_render_body_and_pip_colors_land_within_perceptions_own_thresh
     render so badly that a rendered tile body came back HSV saturation=9/value=253 --
     nearly white -- which silently broke eye42.perception.tile_detect's actual
     pip-counting classifier (0/5 tiles correctly identified against real renders, verified
-    by hand). The bound here (V<=210) matches tile_detect.py's own _TILE_HSV_HIGH ceiling
-    exactly, not a looser number invented for this test -- a render that passes this but
-    would still fail the real production threshold is exactly the gap this guards against.
+    by hand). Two different bounds, two different justifications -- don't conflate them:
+    - The value bound (V<=210) matches tile_detect.py's own _TILE_HSV_HIGH ceiling exactly.
+    - The saturation bound (S>=150) is a DELIBERATELY TIGHTER guard-band than production's
+      actual floor (_TILE_HSV_LOW's S>=40) -- 150 is chosen as safe margin above
+      _PIP_HSV_HIGH's S<=70 ceiling, since the original bug's specific failure mode was the
+      tile body being misread as pip-colored, not merely dipping below the body's own
+      floor. This test can fail before production's real 40-floor would, by design; it is
+      not a claim that 150 is what tile_detect.py itself requires.
 
     Uses a close-up camera where the tile fills most of the frame (not default_camera's
     wide table view, where a single tile is only a few hundred pixels and dominated by
@@ -276,5 +281,5 @@ def test_photoreal_render_body_and_pip_colors_land_within_perceptions_own_thresh
 
     assert body_like.sum() > 0 and pip_like.sum() > 0, "test setup assumption: both body and pip pixels are present"
     body_hsv = hsv[body_like].mean(axis=0)
-    assert body_hsv[1] >= 150, f"tile body saturation too low (overexposed toward white): {body_hsv}"
+    assert body_hsv[1] >= 150, f"tile body saturation too close to the pip-color ceiling (risks misreading as a pip): {body_hsv}"
     assert body_hsv[2] <= _TILE_HSV_HIGH[2], f"tile body value exceeds perception's own tile-color ceiling: {body_hsv}"
