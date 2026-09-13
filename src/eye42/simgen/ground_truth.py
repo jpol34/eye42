@@ -2,7 +2,8 @@
 line shape `tools/gen_synthetic_tiles.py` produces, so `tools/train_tile_segmenter.py`
 needs no changes to consume this data source -- but NOT the same label semantics: this
 module emits one line per disjoint visible fragment of a tile, since the hand+forearm
-occluder rig routinely splits a tile's visible region into separate pieces, while
+occluder rig routinely splits a tile's visible region into separate pieces (in one
+sampled simulated hand, 14 of 36 frames produced at least one fragment split), while
 gen_synthetic_tiles.py's own compositor never produces disjoint masks in the first place
 (its per-tile mask is an unsubtracted solid paste region, always one contiguous blob --
 see synth_data.py's SyntheticTileInstance docstring) and so still emits exactly one line
