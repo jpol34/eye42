@@ -329,23 +329,22 @@ is still untuned against real footage.
   pile-inspection signal won't always recover everything. No reconciliation
   mechanism is built; this is only a note for whoever designs one once a
   real pile-inspection signal exists.
-- **Confidence field on speech-sourced events — do not add yet, and note a
-  related dead-code question first.** `BidMade`/`Passed`/`TrumpCalled`/
-  `TrumpCueHeard` have no `confidence` field; `TilePlayed.confidence` does.
-  But `TilePlayed.confidence` is itself currently dead — there are zero
-  reads of it anywhere in `engine/` today — and `TrumpCalled` (the event
-  type) is
-  entirely unconstructed anywhere (`call_trump()` takes raw `(caller,
-  trump)` args, not this event). Adding more confidence fields with no
-  consumer on top of one that's already unconsumed would be pure unforced
-  dead weight. `speech/bid_parser.py`'s `Utterance.confidence`/
-  `BidCandidate.combined_score` (`confidence * plausibility`) is a working
-  precedent for confidence-weighted speech scoring, so the idea isn't
-  unprecedented — it just isn't wired into the engine layer, and shouldn't
-  be guessed at before there's a concrete consumer. Separate, smaller
-  decision worth making on its own: cut `TilePlayed.confidence` and
-  `TrumpCalled` now that both are fully dead, or keep them dormant the same
-  way `observe_next_dealer`/`TilesDealt` were kept — not resolved here.
+- **Confidence field on speech-sourced events — do not add yet.**
+  `BidMade`/`Passed`/`TrumpCalled`/`TrumpCueHeard` have no `confidence`
+  field; `TilePlayed.confidence` does. `speech/bid_parser.py`'s
+  `Utterance.confidence`/`BidCandidate.combined_score`
+  (`confidence * plausibility`) is a working precedent for
+  confidence-weighted speech scoring, so the idea isn't unprecedented — it
+  just isn't wired into the engine layer, and shouldn't be guessed at before
+  there's a concrete consumer. `TrumpCalled` is a real, tested, dual-interface
+  event (dispatched in `hand.py`'s `ingest`, exercised end to end in
+  `test_telemetry.py`) alongside the direct `call_trump()` method, not dead
+  code — no decision needed there. `TilePlayed.confidence` has no reads in
+  `engine/` today, but keep it dormant rather than cut it: `EventSegmenter`
+  now computes it as a real mean-of-agreeing-frames figure (see
+  `_resolve_identity`), not just a placeholder default, and it's exactly the
+  signal the engine-side reconciliation-on-conflict idea above would need
+  once built.
 - **No shared clock/frame convention between perception and speech stubs** —
   `perception.tile_detect` timestamps with `frame_index: int` (a per-poll-loop
   counter in `tools/live_view.py`'s `Session.on_frame`, unrelated to true
