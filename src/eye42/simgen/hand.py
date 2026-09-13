@@ -26,7 +26,6 @@ import numpy as np
 
 from eye42.simgen.tile_geometry import TILE_HALF_EXTENTS_M
 
-_IDENTITY_QUAT = (1.0, 0.0, 0.0, 0.0)
 _TILE_TOP_Z_M = TILE_HALF_EXTENTS_M[2]  # a resting tile's top surface height above the table plane
 
 # Rough human-hand-scale proportions (meters), palm-down, fingers extending +x in the
@@ -49,6 +48,11 @@ _THUMB_YAW_RAD = -0.8  # angled off to the side of the palm, not parallel to the
 _TABLE_CLEARANCE_M = 0.006  # how far the palm/finger undersides hover above a resting tile's
 # top surface -- Phase 1 is kinematic (no contact physics), so this is a fixed offset, not
 # a physically resolved contact.
+
+RESTING_WRIST_HEIGHT_M = _TILE_TOP_Z_M + _TABLE_CLEARANCE_M + _PALM_HALF_EXTENTS_M[2]  # the
+# wrist z place_hand uses -- exported so callers posing a hand without place_hand's
+# reach/target geometry (e.g. gen_sim_dataset.py's unconstrained scene-track hands) don't
+# have to duplicate this formula and risk it silently drifting out of sync.
 
 
 @dataclass(frozen=True)
@@ -95,16 +99,28 @@ def _quat_multiply(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     )
 
 
-def _rotate_vector(quat: np.ndarray, v: Tuple[float, float, float]) -> np.ndarray:
+def _rotation_matrix(quat: np.ndarray) -> np.ndarray:
     w, x, y, z = quat
-    rotation = np.array(
+    return np.array(
         [
             [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
             [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
             [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
         ]
     )
-    return rotation @ np.array(v, dtype=float)
+
+
+def _rotate_vector(quat: np.ndarray, v: Tuple[float, float, float]) -> np.ndarray:
+    return _rotation_matrix(quat) @ np.array(v, dtype=float)
+
+
+def _min_z_below_center(quat: Tuple[float, float, float, float], half_extents: Tuple[float, float, float]) -> float:
+    """How far a rotated box's LOWEST corner sits below its own center, in world z -- the
+    standard rotated-AABB extent formula (a row of the rotation matrix, dotted with the
+    box's half-extents, in absolute value). Used to keep every part's actual bottom
+    surface (not just its center) above the table, however it's curled/rotated."""
+    row = _rotation_matrix(np.array(quat))[2]
+    return float(np.dot(np.abs(row), np.array(half_extents)))
 
 
 def _digit_parts(
@@ -184,8 +200,11 @@ def hand_parts(pose: HandPose) -> List[RigidPart]:
             )
         )
 
-    # Thumb: angled off the near side of the palm, shorter, same curl amount.
-    thumb_base_local = (palm_local_x * 0.6, -(_PALM_HALF_EXTENTS_M[1] + 0.01) * spread_scale, 0.0)
+    # Thumb: angled off the near side of the palm, shorter, same curl amount. Only the
+    # extra 0.01m offset scales with spread -- scaling the whole (palm_half_width + 0.01m)
+    # term (an earlier version here did) moved the thumb's ANCHOR itself, not just its
+    # spacing, visibly detaching it from the palm at high spread (up to ~2.4cm gap).
+    thumb_base_local = (palm_local_x * 0.6, -(_PALM_HALF_EXTENTS_M[1] + 0.01 * spread_scale), 0.0)
     parts.extend(
         _digit_parts(
             "thumb", thumb_base_local, _THUMB_YAW_RAD, curl_rad,
@@ -194,15 +213,29 @@ def hand_parts(pose: HandPose) -> List[RigidPart]:
         )
     )
 
-    return parts
+    # Safety floor: a curled fingertip's lowest corner can dip below the table/tile
+    # surface even though its CENTER stays comfortably positive (caught by a geometry
+    # test that swept curl to 1.0 and checked only the center -- the center passed while
+    # corners were ~7mm underground). Clamp each part's actual bottom surface, not just
+    # its center, to never sink below a resting tile's top -- this holds across the whole
+    # HandPose domain, not just the narrower curl range place_hand() itself emits.
+    clamped_parts = []
+    for part in parts:
+        lowest_corner_z = part.center_m[2] - _min_z_below_center(part.orientation_quat, part.half_extents_m)
+        if lowest_corner_z < _TILE_TOP_Z_M:
+            lift = _TILE_TOP_Z_M - lowest_corner_z
+            center = (part.center_m[0], part.center_m[1], part.center_m[2] + lift)
+            part = RigidPart(part.name, center, part.orientation_quat, part.half_extents_m)
+        clamped_parts.append(part)
+    return clamped_parts
 
 
 def place_hand(from_xy: Tuple[float, float], to_xy: Tuple[float, float], phase: float, rng: random.Random) -> HandPose:
-    """A single reach-place-retract path: the wrist arcs from an off-table rest point
-    (behind from_xy) to hover over to_xy and back. ``phase`` in [0, 1] samples a point
-    along that path -- callers should draw from a late-phase band (released-through-
-    retracting) so the pose is physically coherent with a tile already settled at to_xy
-    (see trajectory.py), not still mid-grasp.
+    """A single reach-place-retract path: the wrist arcs from a rest point on the
+    approach side of from_xy (i.e. beyond it, away from to_xy) to hover over to_xy and
+    back. ``phase`` in [0, 1] samples a point along that path -- callers should draw from
+    a late-phase band (released-through-retracting) so the pose is physically coherent
+    with a tile already settled at to_xy (see trajectory.py), not still mid-grasp.
 
     This is Phase 1's one parameterized motion, deliberately not the full ~8-clip
     keyframed gesture library RESEARCH.md's fuller recommendation calls for -- see
@@ -211,7 +244,11 @@ def place_hand(from_xy: Tuple[float, float], to_xy: Tuple[float, float], phase: 
     direction = from_arr - to_arr
     norm = np.linalg.norm(direction)
     approach_dir = direction / norm if norm > 1e-9 else np.array([0.0, 1.0])
-    rest_xy = to_arr + approach_dir * 0.25  # off-table-ish rest point behind the target
+    # A fixed rest-offset (e.g. always 0.25m) would land BETWEEN from_xy and to_xy rather
+    # than beyond from_xy whenever |from-to| is smaller than that -- scale it off the
+    # actual distance instead, capped so it doesn't run away for a very long reach.
+    rest_offset = min(0.5 * float(norm), 0.15)
+    rest_xy = from_arr + approach_dir * rest_offset
 
     # phase 0 -> at rest_xy (retracted); phase ~0.6 -> at to_xy (placing); phase 1 -> back at rest_xy.
     # A simple triangular path through the placement point keeps this a one-parameter
@@ -224,8 +261,7 @@ def place_hand(from_xy: Tuple[float, float], to_xy: Tuple[float, float], phase: 
         wrist_xy = to_arr + (rest_xy - to_arr) * t
 
     yaw_rad = float(np.arctan2(-approach_dir[1], -approach_dir[0]))  # fingers point toward to_xy
-    wrist_height = _TILE_TOP_Z_M + _TABLE_CLEARANCE_M + _PALM_HALF_EXTENTS_M[2]
-    wrist_m = (float(wrist_xy[0]), float(wrist_xy[1]), wrist_height)
+    wrist_m = (float(wrist_xy[0]), float(wrist_xy[1]), RESTING_WRIST_HEIGHT_M)
 
     curl = 0.15 + 0.15 * rng.random()  # near-flat, small per-frame variation
     spread = rng.random()

@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from eye42.engine.tiles import full_set  # noqa: E402
 from eye42.simgen.director import script_one_hand  # noqa: E402
 from eye42.simgen.ground_truth import write_frame_truth_jsonl, yolo_seg_lines  # noqa: E402
-from eye42.simgen.hand import HandPose, hand_parts  # noqa: E402
+from eye42.simgen.hand import RESTING_WRIST_HEIGHT_M, HandPose, hand_parts  # noqa: E402
 from eye42.simgen.physics import TileSimulation  # noqa: E402
 from eye42.simgen.render import default_camera, render_debug_preview, render_ground_truth  # noqa: E402
 from eye42.simgen.tile_geometry import TABLE_SIZE_M  # noqa: E402
@@ -56,7 +56,7 @@ def _random_scene_hand(rng: random.Random):
         return ()
     table_w, table_h = TABLE_SIZE_M
     pose = HandPose(
-        wrist_m=(rng.uniform(-table_w / 4, table_w / 4), rng.uniform(-table_h / 4, table_h / 4), 0.03),
+        wrist_m=(rng.uniform(-table_w / 4, table_w / 4), rng.uniform(-table_h / 4, table_h / 4), RESTING_WRIST_HEIGHT_M),
         yaw_rad=rng.uniform(0, 2 * 3.14159265),
         curl=rng.uniform(0.0, 0.5),
         spread=rng.random(),

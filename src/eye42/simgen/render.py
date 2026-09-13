@@ -30,10 +30,9 @@ _DIVIDER_HALF_WIDTH_PX = 3
 _PIP_RADIUS_PX = 10
 _SKIN_COLOR = (55, 85, 140)  # BGR, a generic mid-tone skin tone -- deliberately not tuned
 # to any specific real footage, same "plausible placeholder" status as
-# _SENSOR_NOISE_SIGMA_RANGE. Deliberately fairly dark: this scene's lighting (tuned for
-# Phase 0's tiles) blows a lighter tone out to near-white against the table's own bright
-# (0.85,0.85,0.82) base color, which would defeat the entire point of a visible occluder --
-# verified by rendering several candidates.
+# _SENSOR_NOISE_SIGMA_RANGE. Deliberately fairly dark: a lighter tone blows out to near-
+# white against the table's own bright (0.85,0.85,0.82) base color under this scene's
+# lighting, which would defeat the entire point of a visible occluder.
 _OCCLUDER_OWNER = -2  # ownership-array sentinel distinct from -1 (nothing painted there) and
 # any tile index (>= 0), so a hand/forearm pixel is neither "empty" nor mistaken for a tile
 

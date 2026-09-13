@@ -164,9 +164,11 @@ def test_an_occluder_directly_over_a_tile_reduces_its_visible_fraction():
     tile = _flat_tile(Tile.of(6, 6), 0.0, 0.0)
     occluder = _box_occluder(0.0, 0.0, 0.05, 0.05)
 
-    infos = render_ground_truth([tile], camera, occluders=[occluder])
+    unoccluded_fraction = render_ground_truth([tile], camera)[0].visible_fraction
+    occluded_fraction = render_ground_truth([tile], camera, occluders=[occluder])[0].visible_fraction
 
-    assert infos[0].visible_fraction < 0.3
+    assert unoccluded_fraction == pytest.approx(1.0, abs=0.02)
+    assert occluded_fraction < 0.3
 
 
 def test_no_occluders_argument_matches_the_default_empty_tuple():
