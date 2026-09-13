@@ -293,9 +293,23 @@ def observe_frame(
 @dataclass
 class _PendingTile:
     position: Tuple[float, float]
-    tile: Tile
-    confidence: float
     stable_frames: int = 1
+    # tile -> that tile's per-frame confidences, one entry per matched frame this
+    # candidate has seen -- len(sum of all lists) always equals stable_frames, so
+    # a settling identity is resolved by plurality vote across the whole settle
+    # window (see _resolve_identity) rather than trusting whichever frame happens
+    # to be last, which a single misclassified frame could otherwise corrupt.
+    votes: Dict[Tile, List[float]] = field(default_factory=dict)
+
+
+def _resolve_identity(votes: Dict[Tile, List[float]]) -> Tuple[Tile, float]:
+    """Most frames agreeing wins; ties broken by higher total confidence, and any
+    further tie by whichever tile was observed first -- an arbitrary but stable
+    and deterministic rule, not a claim that it's the "more correct" choice.
+    Reported confidence is the mean of the winning tile's own votes."""
+    winner = max(votes, key=lambda t: (len(votes[t]), sum(votes[t])))
+    confidences = votes[winner]
+    return winner, sum(confidences) / len(confidences)
 
 
 _POSITION_TOLERANCE = 15.0  # rectified-plane pixels; "the same tile" across frames
@@ -483,22 +497,23 @@ class EventSegmenter:
             remaining.remove(match)
             pending.stable_frames += 1
             pending.position = match.position
-            pending.tile, pending.confidence = match.tile, match.confidence
+            pending.votes.setdefault(match.tile, []).append(match.confidence)
             if pending.stable_frames >= self.settle_frames:
                 self._confirmed_positions.append(pending.position)
                 if sweeping:
                     player, player_confidence = 0, 0.0
                 else:
                     player, player_confidence = self._attribute(pending.position)
+                tile, confidence = _resolve_identity(pending.votes)
                 played.append(TilePlayed(
-                    player=player, tile=pending.tile, confidence=pending.confidence,
+                    player=player, tile=tile, confidence=confidence,
                     player_confidence=player_confidence,
                 ))
             else:
                 still_pending.append(pending)
 
         for obs in remaining:
-            still_pending.append(_PendingTile(position=obs.position, tile=obs.tile, confidence=obs.confidence))
+            still_pending.append(_PendingTile(position=obs.position, votes={obs.tile: [obs.confidence]}))
 
         self._pending = still_pending
         return played

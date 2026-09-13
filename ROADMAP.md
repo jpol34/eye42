@@ -322,7 +322,16 @@ is still untuned against real footage.
 - **`perception.tile_detect`'s `TileIdentityClassifier.classify` needs a real
   implementation** — its interface already returns ranked candidates, not a
   single best guess, matching `TrumpHypothesisTracker`'s weighted-candidate
-  convention.
+  convention; `OpenCVTileClassifier` (the concrete implementation) only ever
+  returns one guess or none. `EventSegmenter` already fuses a settling tile's
+  identity by plurality vote across the frames in its settle window (see
+  `_resolve_identity`), which only needs a single guess per frame — a real
+  ranked-candidate implementation is a separate, larger step. Once it exists,
+  a natural follow-up is engine-side reconciliation: when `HandState` logs a
+  conflict for a tile already seen elsewhere, try the classifier's
+  next-ranked candidate against tiles not yet accounted for before falling
+  back to today's log-and-flag behavior. Needs real footage to validate
+  before attempting either — not to be built speculatively.
 - **Self-caught in-the-moment retraction** (a `PlayRetracted` event) and
   rolling back trump-inference/void state for it — today a swapped-in tile
   just gets logged as its own irregularity and the hand keeps going, which
