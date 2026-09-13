@@ -10,6 +10,7 @@ from eye42.perception.synth_data import BODY_COLOR as _BODY_COLOR
 from eye42.perception.synth_data import draw_tile_crop as _make_tile_crop
 from eye42.perception.synth_data import draw_tile_half as _make_half
 from eye42.perception.tile_detect import (
+    _SWEEP_SUSTAINED_FRAMES,
     EventSegmenter,
     HandBoundaryDetector,
     OpenCVTileClassifier,
@@ -245,6 +246,59 @@ def test_segmenter_reports_a_genuinely_new_position_after_baseline_settles():
 
     assert len(played) == 1
     assert played[0].tile == Tile.of(4, 2)
+
+
+def _sweep_frames(shape=(50, 50, 3)):
+    """Two frames whose pixel difference exceeds _sweep_in_progress's 15%-of-
+    table motion threshold -- alternating between them drives sustained
+    "sweeping" for as many feed() calls as needed."""
+    quiet = np.zeros(shape, dtype=np.uint8)
+    busy = np.zeros(shape, dtype=np.uint8)
+    busy[: shape[0] // 2, :, :] = 255
+    return quiet, busy
+
+
+def test_segmenter_reuses_a_position_for_a_later_trick_after_a_sustained_sweep():
+    """A later trick's play landing at the exact same table position an
+    earlier trick's play did (players can toss a trick anywhere on the
+    table, not one fixed zone) must still be reported, once the sweep
+    between the two tricks has been sustained long enough to prune the
+    earlier position out of _confirmed_positions."""
+    segmenter = EventSegmenter(settle_frames=3)
+    quiet, busy = _sweep_frames()
+    _settle_on_empty_table(segmenter, quiet)
+    trick_one = [TileObservation(tile=Tile.of(4, 2), confidence=1.0, position=(10.0, 10.0), frame_index=0)]
+
+    for _ in range(3):
+        played = segmenter.feed(quiet, trick_one)
+    assert len(played) == 1  # trick one's play confirmed
+
+    for i in range(_SWEEP_SUSTAINED_FRAMES):
+        segmenter.feed(busy if i % 2 == 0 else quiet, [])  # sweep clears the trick area
+
+    trick_two = [TileObservation(tile=Tile.of(6, 6), confidence=1.0, position=(10.0, 10.0), frame_index=0)]
+    played = []
+    for _ in range(3):
+        played += segmenter.feed(quiet, trick_two)
+
+    assert len(played) == 1
+    assert played[0].tile == Tile.of(6, 6)
+
+
+def test_segmenter_still_dedupes_same_position_without_a_sweep_between_plays():
+    """Without a sustained sweep in between, a repeat observation at an
+    already-confirmed position must stay suppressed -- the sweep-triggered
+    prune must not weaken ordinary same-hand dedup."""
+    segmenter = EventSegmenter(settle_frames=3)
+    frame = np.zeros((50, 50, 3), dtype=np.uint8)
+    _settle_on_empty_table(segmenter, frame)
+    observation = [TileObservation(tile=Tile.of(4, 2), confidence=1.0, position=(10.0, 10.0), frame_index=0)]
+
+    for _ in range(3):
+        played = segmenter.feed(frame, observation)
+    assert len(played) == 1
+
+    assert segmenter.feed(frame, observation) == []  # no sweep occurred -- still deduped
 
 
 # ---------------------------------------------------------------------------
