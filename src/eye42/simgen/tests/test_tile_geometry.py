@@ -26,7 +26,7 @@ def _worst_case_reach(center: tuple, spread: float) -> float:
     ``drop_and_settle`` apply spread independently per axis, not as one radial
     jitter), plus a tile's own half-diagonal so a tile's far corner, not just its
     center, is accounted for."""
-    return math.hypot(center[0] + spread, center[1] + spread) + _TILE_HALF_DIAGONAL_M
+    return math.hypot(abs(center[0]) + spread, abs(center[1]) + spread) + _TILE_HALF_DIAGONAL_M
 
 
 def test_table_size_has_margin_beyond_every_placement_zones_worst_case_reach():
