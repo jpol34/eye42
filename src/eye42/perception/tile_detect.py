@@ -301,6 +301,9 @@ class _PendingTile:
 _POSITION_TOLERANCE = 15.0  # rectified-plane pixels; "the same tile" across frames
 _MHI_DURATION = 1.0  # seconds of motion history to retain
 _ATTRIBUTION_ROI_RADIUS = 70  # pixels around a settled tile to inspect for its motion trail
+_SWEEP_SUSTAINED_FRAMES = 3  # filters a single noisy motion spike from firing the
+# confirmed-position prune below; much shorter than HandBoundaryDetector's 20-frame
+# reshuffle window since a trick-sweep is a brief, ballistic motion, not sustained scrambling.
 
 
 class EventSegmenter:
@@ -321,6 +324,12 @@ class EventSegmenter:
     as a real-event irregularity, not a crash. A trick-sweep's motion is
     large-area and multi-tile, categorically different from a single play,
     so it's excluded from attribution rather than misread as one.
+
+    A sustained trick-sweep also prunes ``_confirmed_positions`` back to just
+    the hand's baseline: players can toss a trick anywhere on the table, not
+    one fixed zone, so a later trick's play can land at the same position an
+    earlier trick's play did within the same hand, and without pruning that
+    position would still read as "already confirmed" and be silently dropped.
     """
 
     def __init__(self, settle_frames: int = 15, seats: Optional[Dict[str, Tuple[float, float]]] = None) -> None:
@@ -346,6 +355,11 @@ class EventSegmenter:
         self._settling = True
         self._baseline_positions: List[Tuple[float, float]] = []
         self._quiet_frames = 0
+        # Players can toss a trick's tiles anywhere on the table, not one
+        # designated area -- the same physical position can end up hosting a
+        # play in more than one trick within a hand, so _confirmed_positions
+        # (below) needs pruning at each trick-sweep, not just per-hand.
+        self._sweep_streak = 0
 
     def _update_motion(self, frame: np.ndarray) -> np.ndarray:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -448,6 +462,16 @@ class EventSegmenter:
                 self._settling = False
             return []
 
+        self._sweep_streak = self._sweep_streak + 1 if sweeping else 0
+        if self._sweep_streak == _SWEEP_SUSTAINED_FRAMES:
+            # Fires once per sweep (streak keeps climbing past this value until
+            # sweeping ends and resets to 0), not every sweeping frame -- an
+            # unconditional per-frame prune could wipe a position that was
+            # confirmed only moments earlier in the same still-ongoing sweep,
+            # letting that same physical tile silently re-settle and get
+            # reported as a second, spurious play.
+            self._confirmed_positions = list(self._baseline_positions)
+
         remaining = [o for o in observations if not self._already_confirmed(o.position)]
         played: List[TilePlayed] = []
         still_pending: List[_PendingTile] = []
@@ -493,6 +517,7 @@ class EventSegmenter:
         self._settling = True
         self._baseline_positions = []
         self._quiet_frames = 0
+        self._sweep_streak = 0
 
 
 _HAND_BOUNDARY_AREA_FRACTION = 0.35  # a reshuffle moves far more of the table than any single trick-sweep

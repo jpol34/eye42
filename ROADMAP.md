@@ -216,13 +216,6 @@ is still untuned against real footage.
 
 ## Known gaps / ideas under consideration
 
-- **`EventSegmenter._confirmed_positions` only grows within a hand, never pruned per
-  trick.** Since Texas 42 tosses every trick's tiles into the same shared central area
-  (confirmed by real-footage review, not a layout game), a play landing within
-  `_POSITION_TOLERANCE` (15px) of an earlier trick's play position in the *same hand*
-  could be treated as already-confirmed and silently missed — worth bounding/pruning
-  per trick rather than per hand, or confirming real trick placements don't cluster
-  this tightly in practice before treating it as a real bug.
 - **Splash/plunge is currently unreachable through live bidding.** The
   correct mechanism — infer splash/plunge from who actually leads the first
   trick under a MARKS contract — needs new state (who led trick 1) and its
