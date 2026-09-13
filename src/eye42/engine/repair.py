@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from .events import TilePlayed
 
@@ -41,6 +41,7 @@ class IrregularityKind(Enum):
     BID_NOT_LEGAL = auto()  # a bid/pass BiddingRound rejected; dropped, hand continues
     TRICK_COUNT_EXCEEDED = auto()  # a play arriving after all 7 tricks are complete
     TRICK_CLOSED_EARLY = auto()  # a seat-already-played read force-started the next trick
+    AMBIGUOUS_ATTRIBUTION = auto()  # a play recorded on a shaky guess at which seat played it
 
 
 @dataclass(frozen=True)
@@ -56,12 +57,18 @@ class Irregularity:
 class RepairLog:
     conflicts: List[Conflict] = field(default_factory=list)
     irregularities: List[Irregularity] = field(default_factory=list)
+    sink: Optional[Callable[[object], None]] = None
 
     def log_conflict(self, event: TilePlayed, reason: str) -> None:
-        self.conflicts.append(Conflict(event=event, reason=reason))
+        conflict = Conflict(event=event, reason=reason)
+        self.conflicts.append(conflict)
+        if self.sink is not None:
+            self.sink(conflict)
 
     def log_irregularity(self, irregularity: Irregularity) -> None:
         self.irregularities.append(irregularity)
+        if self.sink is not None:
+            self.sink(irregularity)
 
     @property
     def has_conflicts(self) -> bool:

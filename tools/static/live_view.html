@@ -1,0 +1,352 @@
+<title>eye42 — live session</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #16241c;
+    --panel: #1e3327;
+    --panel-alt: #24392c;
+    --ink: #f2ead9;
+    --muted: #9db0a1;
+    --accent: #c98a3b;
+    --alert: #d1573f;
+    --rule: #35503f;
+    --camera-bg: #0c1510;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --bg: #f2ead9;
+      --panel: #ffffff;
+      --panel-alt: #ece0c5;
+      --ink: #1c2b21;
+      --muted: #5b6b5e;
+      --accent: #8a5a1f;
+      --alert: #a63b26;
+      --rule: #cbb98f;
+      --camera-bg: #ddd0aa;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    padding: 16px;
+  }
+  .mono {
+    font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  }
+  h1 {
+    font-family: ui-serif, Georgia, "Times New Roman", serif;
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin: 0 0 12px;
+    letter-spacing: 0.01em;
+  }
+  h2 {
+    font-family: ui-serif, Georgia, "Times New Roman", serif;
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin: 0 0 10px;
+    color: var(--muted);
+  }
+  .layout {
+    display: grid;
+    grid-template-columns: minmax(320px, 1.1fr) minmax(300px, 1fr);
+    gap: 14px;
+  }
+  @media (max-width: 700px) {
+    .layout { grid-template-columns: 1fr; }
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 14px;
+  }
+  .camera-frame {
+    aspect-ratio: 4 / 3;
+    background: var(--camera-bg);
+    border-radius: 4px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+  .camera-frame img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .camera-status {
+    position: absolute;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+  .camera-caption {
+    margin-top: 8px;
+    font-size: 0.8rem;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .row { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; font-size: 0.9rem; }
+  .row .label { color: var(--muted); }
+  .row .value { text-align: right; }
+
+  .divider { border-top: 1px solid var(--rule); margin: 10px 0; }
+
+  .trick-plays { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+  .tile-chip {
+    font-size: 0.85rem;
+    padding: 2px 7px;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    background: var(--panel-alt);
+  }
+  .tile-chip .seat { color: var(--muted); margin-right: 4px; }
+  .tile-chip.winner { border-color: var(--accent); color: var(--accent); }
+
+  .tricks-list { display: flex; flex-direction: column; gap: 6px; max-height: 160px; overflow-y: auto; }
+  .trick-entry { font-size: 0.85rem; display: flex; gap: 8px; align-items: baseline; }
+  .trick-entry .idx { color: var(--muted); width: 1.4em; }
+
+  .open-questions.has-items {
+    border-color: var(--alert);
+    animation: pulse 1.6s ease-in-out 1;
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--alert) 45%, transparent); }
+    100% { box-shadow: 0 0 0 8px color-mix(in srgb, var(--alert) 0%, transparent); }
+  }
+  .question {
+    border-left: 3px solid var(--alert);
+    background: color-mix(in srgb, var(--alert) 12%, var(--panel-alt));
+    padding: 6px 8px;
+    border-radius: 3px;
+    font-size: 0.85rem;
+    margin-bottom: 6px;
+  }
+  .question .kind { color: var(--alert); font-weight: 600; }
+  .question .reason { color: var(--ink); margin-top: 2px; }
+  .empty-note { color: var(--muted); font-size: 0.85rem; }
+
+  .log-panel { margin-top: 14px; }
+  .log-list {
+    max-height: 220px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 4px;
+    background: var(--panel-alt);
+    border-radius: 4px;
+    padding: 8px;
+  }
+  .log-row { font-size: 0.8rem; display: flex; gap: 8px; }
+  .log-row .ts { color: var(--muted); flex-shrink: 0; }
+  .log-row .kind { flex-shrink: 0; }
+  .log-row.irregularity .kind { color: var(--alert); }
+  .log-row .reason { color: var(--muted); }
+
+  .marks { display: flex; gap: 18px; margin-bottom: 4px; }
+  .marks .team { font-size: 0.85rem; }
+  .marks .team .n { font-size: 1.3rem; margin-right: 4px; }
+</style>
+
+<h1>eye42 — live session</h1>
+<div class="layout">
+  <div class="panel">
+    <h2>Camera</h2>
+    <div class="camera-frame">
+      <img id="camera-img" hidden>
+      <span class="camera-status" id="camera-status">waiting for frame&hellip;</span>
+    </div>
+    <div class="camera-caption">
+      <span id="camera-updated">no frame yet</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Game state</h2>
+    <div class="marks" id="marks"></div>
+    <div class="row"><span class="label">Dealer</span><span class="value mono" id="dealer">&mdash;</span></div>
+    <div class="row"><span class="label">Current bidder</span><span class="value mono" id="current-bidder">&mdash;</span></div>
+    <div class="row"><span class="label">Contract</span><span class="value mono" id="contract">&mdash;</span></div>
+    <div class="row"><span class="label">Trump</span><span class="value mono" id="trump">&mdash;</span></div>
+    <div class="row"><span class="label">Bidding-team points</span><span class="value mono" id="points">&mdash;</span></div>
+
+    <div class="divider"></div>
+    <h2>Current trick</h2>
+    <div class="trick-plays" id="current-trick"><span class="empty-note">no trick in progress</span></div>
+
+    <div class="divider"></div>
+    <h2>Completed tricks</h2>
+    <div class="tricks-list" id="tricks"><span class="empty-note">none yet</span></div>
+
+    <div class="divider"></div>
+    <h2>Open questions</h2>
+    <div id="open-questions"><span class="empty-note">none</span></div>
+  </div>
+</div>
+
+<div class="panel log-panel">
+  <h2>Log tail</h2>
+  <div class="log-list" id="log-list"></div>
+</div>
+
+<script>
+  const SEATS = ["N", "E", "S", "W"];
+  const seatLabel = (n) => (n === null || n === undefined) ? "—" : `${SEATS[n]}`;
+
+  function setText(id, text) {
+    document.getElementById(id).textContent = text;
+  }
+
+  async function pollSnapshot() {
+    try {
+      const res = await fetch("/snapshot.jpg?_=" + Date.now());
+      if (!res.ok) throw new Error("no frame");
+      const blob = await res.blob();
+      const img = document.getElementById("camera-img");
+      const prevUrl = img.dataset.blobUrl;
+      img.src = URL.createObjectURL(blob);
+      img.hidden = false;
+      document.getElementById("camera-status").hidden = true;
+      if (prevUrl) URL.revokeObjectURL(prevUrl);
+      img.dataset.blobUrl = img.src;
+      setText("camera-updated", new Date().toLocaleTimeString());
+    } catch {
+      document.getElementById("camera-status").hidden = false;
+      document.getElementById("camera-status").textContent = "camera unavailable";
+    }
+  }
+
+  function renderTrickPlays(container, plays, winnerSeat) {
+    container.innerHTML = "";
+    if (!plays || plays.length === 0) {
+      container.innerHTML = '<span class="empty-note">no plays yet</span>';
+      return;
+    }
+    for (const [seat, tile] of plays) {
+      const chip = document.createElement("span");
+      chip.className = "tile-chip mono" + (seat === winnerSeat ? " winner" : "");
+      chip.innerHTML = `<span class="seat">${seatLabel(seat)}</span>${tile}`;
+      container.appendChild(chip);
+    }
+  }
+
+  function renderState(state) {
+    const marks = document.getElementById("marks");
+    marks.innerHTML = (state.marks || [0, 0])
+      .map((m, i) => `<span class="team"><span class="n mono">${m}</span>team ${i}</span>`)
+      .join("");
+
+    const hand = state.hand;
+    setText("dealer", hand ? seatLabel(hand.dealer) : seatLabel(state.dealer));
+    setText("current-bidder", hand && hand.current_bidder !== null ? seatLabel(hand.current_bidder) : "—");
+
+    if (hand && hand.contract) {
+      const c = hand.contract;
+      setText("contract", `${seatLabel(c.bidder)} — ${c.kind.toLowerCase()} ${c.amount}`);
+    } else {
+      setText("contract", "not yet resolved");
+    }
+
+    if (hand && hand.trump) {
+      const t = hand.trump;
+      setText("trump", t.confirmed !== null ? `${t.confirmed} (confirmed)` : `${t.best_guess} (guess)`);
+    } else {
+      setText("trump", "—");
+    }
+
+    setText("points", hand && hand.bidding_team_points !== null && hand.bidding_team_points !== undefined
+      ? hand.bidding_team_points : "—");
+
+    const currentTrickEl = document.getElementById("current-trick");
+    if (hand && hand.current_trick) {
+      renderTrickPlays(currentTrickEl, hand.current_trick.plays, null);
+    } else {
+      currentTrickEl.innerHTML = '<span class="empty-note">no trick in progress</span>';
+    }
+
+    const tricksEl = document.getElementById("tricks");
+    const tricks = (hand && hand.tricks) || [];
+    if (tricks.length === 0) {
+      tricksEl.innerHTML = '<span class="empty-note">none yet</span>';
+    } else {
+      tricksEl.innerHTML = "";
+      tricks.forEach((t, i) => {
+        const row = document.createElement("div");
+        row.className = "trick-entry";
+        const plays = t.plays.map(([seat, tile]) => `${seatLabel(seat)}:${tile}`).join("  ");
+        row.innerHTML = `<span class="idx mono">${i + 1}</span>` +
+          `<span class="mono">${plays}</span>` +
+          `<span class="mono" style="color: var(--accent)">→ ${seatLabel(t.winner)}</span>`;
+        tricksEl.appendChild(row);
+      });
+    }
+
+    const questionsPanel = document.getElementById("open-questions").closest(".panel");
+    const questionsEl = document.getElementById("open-questions");
+    const questions = (hand && hand.open_questions) || [];
+    if (questions.length === 0) {
+      questionsEl.innerHTML = '<span class="empty-note">none</span>';
+      questionsPanel.classList.remove("open-questions", "has-items");
+    } else {
+      questionsEl.innerHTML = "";
+      questionsPanel.classList.add("open-questions", "has-items");
+      for (const q of questions) {
+        const div = document.createElement("div");
+        div.className = "question";
+        div.innerHTML = `<div class="kind">${q.kind}${q.player !== null && q.player !== undefined ? ` — seat ${seatLabel(q.player)}` : ""}</div>` +
+          `<div class="reason">${q.reason}</div>`;
+        questionsEl.appendChild(div);
+      }
+    }
+  }
+
+  let sinceTs = null;
+  const seenLogRows = new Set(); // "table:id" -- /log's since filter is >=, so the boundary row repeats
+  async function pollLog() {
+    try {
+      const url = sinceTs ? `/log?since=${sinceTs}` : "/log";
+      const res = await fetch(url);
+      const rows = await res.json();
+      if (rows.length === 0) return;
+      const list = document.getElementById("log-list");
+      for (const row of rows) {
+        const key = `${row.table}:${row.id}`;
+        if (seenLogRows.has(key)) continue;
+        seenLogRows.add(key);
+        const div = document.createElement("div");
+        const isIrregularity = row.table === "irregularities";
+        div.className = "log-row" + (isIrregularity ? " irregularity" : "");
+        const time = new Date(row.ts * 1000).toLocaleTimeString();
+        const reason = isIrregularity ? ` — ${row.reason || ""}` : "";
+        div.innerHTML = `<span class="ts mono">${time}</span><span class="kind mono">${row.kind}</span><span class="reason">${reason}</span>`;
+        list.insertBefore(div, list.firstChild);
+      }
+      while (list.children.length > 200) list.removeChild(list.lastChild);
+      sinceTs = rows[rows.length - 1].ts;
+    } catch {
+      // transient fetch failure -- next poll retries
+    }
+  }
+
+  async function pollState() {
+    try {
+      const res = await fetch("/state.json");
+      renderState(await res.json());
+    } catch {
+      // transient fetch failure -- next poll retries
+    }
+  }
+
+  function tick() {
+    pollSnapshot();
+    pollState();
+    pollLog();
+  }
+  tick();
+  setInterval(tick, 1000);
+</script>

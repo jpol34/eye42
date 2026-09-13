@@ -39,6 +39,37 @@ def test_out_of_turn_lead_is_recorded_not_raised():
     assert IrregularityKind.OUT_OF_TURN in _kinds(hand)
 
 
+# ---------------------------------------------------------------------------
+# player-attribution confidence
+# ---------------------------------------------------------------------------
+
+def test_low_attribution_confidence_is_flagged_but_still_recorded():
+    hand = HandState(dealer=3)
+    hand.bid(0, 30)
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)
+    hand.call_trump(0, trump=6)
+
+    hand.play_tile(TilePlayed(player=0, tile=Tile.of(6, 6), player_confidence=0.3))
+
+    assert IrregularityKind.AMBIGUOUS_ATTRIBUTION in _kinds(hand)
+    assert Tile.of(6, 6) in hand.played_tiles
+
+
+def test_default_attribution_confidence_is_not_flagged():
+    hand = HandState(dealer=3)
+    hand.bid(0, 30)
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)
+    hand.call_trump(0, trump=6)
+
+    hand.play_tile(TilePlayed(player=0, tile=Tile.of(6, 6)))
+
+    assert IrregularityKind.AMBIGUOUS_ATTRIBUTION not in _kinds(hand)
+
+
 def test_skipped_seat_recovers_turn_order():
     hand = HandState(dealer=3)
     hand.bid(0, 30)

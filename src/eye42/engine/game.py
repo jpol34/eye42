@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from ..telemetry import EventStore, repair_sink
 from .hand import HandOutcomeKind, HandState
 from .repair import Irregularity, IrregularityKind, RepairLog
 
@@ -38,6 +39,8 @@ class HandLedgerEntry:
 @dataclass
 class GameState:
     starting_dealer: int = 0
+    store: Optional[EventStore] = None
+    session_id: str = "default"
     marks: List[int] = field(default_factory=lambda: [0, 0])
     hands_played: List[HandState] = field(default_factory=list, init=False)
     repairs: RepairLog = field(default_factory=RepairLog, init=False)
@@ -46,6 +49,8 @@ class GameState:
 
     def __post_init__(self) -> None:
         self._dealer = self.starting_dealer
+        if self.store is not None:
+            self.repairs = RepairLog(sink=repair_sink(self.store, self.session_id, lambda: len(self.hands_played)))
 
     @property
     def dealer(self) -> int:
@@ -59,7 +64,12 @@ class GameState:
         return None
 
     def new_hand(self) -> HandState:
-        return HandState(dealer=self._dealer)
+        return HandState(
+            dealer=self._dealer,
+            store=self.store,
+            session_id=self.session_id,
+            hand_index=len(self.hands_played),
+        )
 
     def record_hand(self, hand: HandState) -> None:
         dealer_at_deal = self._dealer
@@ -161,6 +171,20 @@ class GameState:
             needs_confirmation=True,
         ))
         return "adopted_unexpected_dealer"
+
+    def live_state(self) -> dict:
+        """Read-only snapshot of game-level state for the live-session viewer.
+
+        Deliberately doesn't include the in-progress hand: ``hands_played``
+        only gains an entry once ``record_hand`` closes it out, so the caller
+        driving a live hand (``tools/live_view.py``) still holds that
+        ``HandState`` itself and should merge in its own ``live_state()``."""
+        return {
+            "marks": list(self.marks),
+            "dealer": self.dealer,
+            "winner": self.winner,
+            "hands_played": len(self.hands_played),
+        }
 
     def open_questions(self) -> List[Irregularity]:
         """Aggregated feed for the Phase 4 post-hoc confirmation UI -- every

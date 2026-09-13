@@ -48,6 +48,10 @@ class TilePlayed:
     player: int
     tile: Tile
     confidence: float = 1.0  # CV classifier confidence in this tile's identity, 0-1
+    # Separate from `confidence`: how sure perception is that `player` is the seat
+    # that actually played it, not just what the tile is -- a settled tile's resting
+    # position on a shared table doesn't by itself reveal who played it.
+    player_confidence: float = 1.0
 
 
 @dataclass(frozen=True)

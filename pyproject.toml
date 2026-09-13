@@ -19,15 +19,41 @@ dev = [
     "pytest>=7.0",
 ]
 perception = [
-    "opencv-python-headless",
+    "opencv-contrib-python-headless",
     "numpy",
+]
+perception-hands = [
+    "mediapipe",
+]
+perception-segmenter = [
+    "onnxruntime",
+]
+perception-training = [
+    "ultralytics",
 ]
 speech = [
     "faster-whisper",
+]
+sim = [
+    "mujoco>=3.12",
+    "opencv-contrib-python-headless",
+    "numpy",
+]
+sim-render = [
+    "bpy",
+]
+live = [
+    "flask",
+    "opencv-contrib-python-headless",
+    "sounddevice",
+    "mediapipe",
 ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.pytest.ini_options]
-testpaths = ["src/eye42/engine/tests"]
+testpaths = ["src/eye42/engine/tests", "src/eye42/perception/tests", "src/eye42/simgen/tests"]
+markers = [
+    "slow: exercises real physics/rendering over a full scripted hand -- seconds, not milliseconds",
+]

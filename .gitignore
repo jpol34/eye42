@@ -9,3 +9,18 @@ dist/
 *.mp4
 *.mov
 *.wav
+
+# Runtime/generated data, not source -- reproducible via the tools that write them.
+*.db
+*.db-shm
+*.db-wal
+MUJOCO_LOG.TXT
+eye42_game1_frames/
+high_res_frame*.jpg
+high_res_frame*.png
+sample_sim_dataset/
+sample_synth_images/
+sim_data/
+synth_data/
+models/
+runs/
