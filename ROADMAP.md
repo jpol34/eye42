@@ -50,11 +50,14 @@ YOLOv8-seg model against this new data source.
 
 **Known rough edges to tune, not fixed yet:** `tile_geometry.py`'s
 `TABLE_SIZE_M` and `trajectory.py`'s seat rack/won-pile zone coordinates are
-placeholder guesses (no real camera calibration exists yet — see
-RESEARCH.md's "calibration.json is a homography, not a camera calibration"),
-so rendered rack tiles can sit near/past the table plane's rendered edge;
-`render.py`'s `Camera` is a plausible oblique guess, not calibrated to the
-real rig.
+still placeholder guesses in absolute meters (no real table measurement or
+camera calibration exists yet — see RESEARCH.md's "calibration.json is a
+homography, not a camera calibration"), though a regression test now pins a
+minimum margin between the table edge and every zone's worst-case reach so
+this can't silently regress. `default_camera()`'s oblique *angle* is not a
+guess — its near/far edge ratio is verified against `calibration.json`'s real
+corner points — but its distance/`focal_px` (how tightly it frames the table)
+is still untuned against real footage.
 
 ## Not yet built
 
