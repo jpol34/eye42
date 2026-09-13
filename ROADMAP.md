@@ -38,15 +38,20 @@ required, contrary to what was expected going in). `tools/gen_sim_dataset.py`
 CLI ties it together. See RESEARCH.md's "Standalone 3D simulation" section
 for the full design rationale.
 
+Each tile's top face carries a pip/divider texture (`_tile_top_texture` in
+`simgen/render.py`, reusing `synth_data.py`'s `pip_layout_fractions` as the
+shared layout convention) so rendered tiles show the correct pip count and
+divider line, not a flat glossy box.
+
 **Deferred, explicitly out of scope for Phase 0** (see RESEARCH.md and the
-plan this was built from): photoreal material/lighting matched against real
-footage (pip/divider texturing, measured roughness/gloss — tiles currently
-render as a flat glossy green box, no pips); calibrated lens
-distortion/sensor noise; the articulated hand+forearm rig with a keyframed
-gesture library (footage research found this is genuinely needed, not
-optional — tiles currently teleport-slide via a physics-driven push, no hand
-visible at all); GPU-rented bulk generation; retraining/evaluating the
-YOLOv8-seg model against this new data source.
+plan this was built from): measured roughness/gloss calibrated against real
+footage (pips currently share the body's flat `Roughness=0.15`, no separate
+matte/gloss distinction); calibrated lens distortion/sensor noise; the
+articulated hand+forearm rig with a keyframed gesture library (footage
+research found this is genuinely needed, not optional — tiles currently
+teleport-slide via a physics-driven push, no hand visible at all); GPU-rented
+bulk generation; retraining/evaluating the YOLOv8-seg model against this new
+data source.
 
 **Known rough edges to tune, not fixed yet:** `tile_geometry.py`'s
 `TABLE_SIZE_M` and `trajectory.py`'s seat rack/won-pile zone coordinates are
