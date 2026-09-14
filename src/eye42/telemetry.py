@@ -175,6 +175,16 @@ class EventStore:
             cols = [d[0] for d in cur.description]
             return [dict(zip(cols, row)) for row in cur.fetchall()]
 
+    def irregularities_for_session(self, session_id: str) -> List[Dict[str, Any]]:
+        """Full, ordered irregularity history for a session, mirroring
+        ``events_for_session`` for the derived-output table it excludes."""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT * FROM irregularities WHERE session_id = ? ORDER BY id ASC", (session_id,)
+            )
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
+
     def close(self) -> None:
         self._conn.close()
 
