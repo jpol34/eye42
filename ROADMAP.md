@@ -45,9 +45,6 @@ entry elsewhere in this file, not restated here):
   data (see "Implementation notes for not-yet-built phases").
 - Phase 5 robustness hardening — only in response to a specific, reproducible
   failure mode real validation footage actually shows, not speculatively.
-- A shared clock/frame convention between perception and speech ("No shared
-  clock/frame convention between perception and speech stubs") — inert until
-  Phase 3 (speech) exists, which itself needs real recorded audio.
 
 ## Standalone 3D simulation (`eye42.simgen`)
 
@@ -128,14 +125,35 @@ against real footage.
   What's left, concretely: wire `tile_segment.py` in for the touching-
   cluster case, build the concession/redeal perception signal, and assemble
   everything into one live pipeline entry point.
-- **Phase 3 — speech layer** (bidding/trump from audio): continuous local VAD
-  + Whisper STT (no cloud API) against a closed vocabulary, scored by
-  bid-rotation plausibility × ASR confidence rather than accepting on a bare
-  vocabulary match (ordinary table talk containing a number must not read as
-  a bid); weak trump cues feed the engine's `TrumpHypothesisTracker` as
-  evidence, never as a direct, unconditional trump-set; speaker attribution
-  via turn-order rotation, with observed-leader-is-partner treated as
-  positive evidence for a splash/plunge bid, not a mismatch to flag.
+- **Phase 3 — speech layer, batch MVP built and validated against real
+  recorded gameplay audio, not yet live.** Built: `speech.transcribe`
+  (batch, not streaming — local `faster-whisper`, "base" model +
+  `vad_filter=True`, no cloud API) and `speech.bid_parser`'s
+  `BidCandidateScorer`/`TrumpCueResolver` (closed-vocabulary bid/pass/marks/
+  trump-cue matching scored by bid-rotation plausibility, checked via a
+  deep-copied trial call into the real `BiddingRound`, rather than accepting
+  on a bare vocabulary match — ordinary table talk containing a number must
+  not read as a bid, confirmed against real transcripts). Speaker
+  attribution is turn-order rotation only (`BiddingRound.current_bidder`),
+  never true diarization — a single shared table mic makes real diarization
+  both hard and unnecessary here. `tools/transcribe_session.py` runs the
+  whole pipeline against a session's WAV and prints a candidate bid/trump-cue
+  sequence for a human to confirm against the video — it does not feed
+  events into a live `HandState` (see "No shared clock/frame convention",
+  below, for why that's not wired up yet). See RESEARCH.md's "Speech:
+  real-audio Whisper validation" section for the transcript evidence this
+  was built against, including one real false-positive shape found and
+  fixed during validation. Not built: real-time/streaming transcription
+  (deliberately deferred — batch is the right MVP per that same research:
+  real-time re-segmentation makes Whisper's worst failure mode, poor
+  accuracy on short isolated utterances, worse, for no benefit this project
+  needs); the engine's splash/plunge-from-observed-leader cross-check
+  already works automatically once a real `TrumpCalled`/`TilePlayed` event
+  reaches `HandState` (see `engine.hand._maybe_infer_splash_or_plunge`), so
+  nothing extra is needed on the speech side for that; point-bid ("thirty",
+  ...) vocabulary matching is unvalidated against real speech (no example
+  turned up in the audio sampled so far) unlike marks bids, which do have
+  real transcript evidence.
 - **Phase 4 — live dashboard**: switch from record-then-batch to a live
   polling loop; a minimal web dashboard for current bid/trump/trick/score and
   multi-hand marks tracking. The only confirmation channel that doesn't
@@ -256,19 +274,21 @@ against real footage.
   confidence-weighted speech scoring, so the idea isn't unprecedented — it
   just isn't wired into the engine layer, and shouldn't be guessed at before
   there's a concrete consumer.
-- **No shared clock/frame convention between perception and speech stubs** —
+- **No shared clock/frame convention between perception and speech** —
   `perception.tile_detect` timestamps with `frame_index: int` (a per-poll-loop
-  counter, unrelated to true camera FPS, which itself varies under load),
-  `speech.bid_parser`'s `Utterance` with `start_time`/`end_time` in seconds
-  (unproduced today — the whole module is `NotImplementedError` stubs).
-  Needed before a played tile and a spoken bid can be ordered against each
-  other; inert until Phase 3 (speech) exists. `EventStore.log_event`'s
-  existing wall-clock `time.time()` stamp on every ingested event is the
-  likely anchor for both sides, rather than a new mechanism. One wrinkle for
-  whoever designs this: `tools/live_view.py` records video and audio as two
-  independently wall-clock-paced but separate files with no recorded shared
-  T0, so there's an unquantified startup-latency skew between them to
-  account for.
+  counter, unrelated to true camera FPS, which itself varies under load);
+  `speech.bid_parser`'s `Utterance` uses `start_time`/`end_time` in seconds
+  relative to the transcribed WAV's own start, now actually produced (not
+  just stubbed) by `speech.transcribe.transcribe_wav`. Needed before a
+  played tile and a spoken bid can be ordered against each other and fed
+  into the same live `HandState` — this is why `tools/transcribe_session.py`
+  only prints a candidate sequence today rather than calling
+  `HandState.ingest()` directly. `EventStore.log_event`'s existing wall-clock
+  `time.time()` stamp on every ingested event is the likely anchor for both
+  sides, rather than a new mechanism. One wrinkle for whoever designs this:
+  `tools/live_view.py` records video and audio as two independently
+  wall-clock-paced but separate files with no recorded shared T0, so there's
+  an unquantified startup-latency skew between them to account for.
 - **`perception.tile_detect`'s `TileIdentityClassifier.classify` needs a real
   implementation** — its interface already returns ranked candidates, not a
   single best guess, matching `TrumpHypothesisTracker`'s weighted-candidate
