@@ -27,6 +27,18 @@ class TrumpHypothesisTracker:
     hard_confirmed: bool = field(default=False, init=False)
     ever_confirmed: bool = field(default=False, init=False)
     _last_weights_before_empty: Optional[Dict[int, float]] = field(default=None, init=False)
+    # [candidate][player] -> {suit: confidence of the play that revealed the
+    # void}. Independent of `weights`: a candidate's identity never changes
+    # even while its weight collapses and reopens via `_last_weights_before_empty`,
+    # so voids recorded against it stay valid evidence throughout -- not reset
+    # alongside a weight collapse/reopen, only ever stale once trump is
+    # confirmed (at which point nothing reads this anymore). A false void
+    # seeded by one bad tile read has no analogous rollback and can persist;
+    # accepted, not solved -- see ROADMAP.md's "Trump determination beyond the
+    # first lead" entry.
+    voids: Dict[int, Dict[int, Dict[int, float]]] = field(
+        default_factory=lambda: {n: {p: {} for p in range(4)} for n in range(7)}, init=False
+    )
 
     @property
     def is_confirmed(self) -> bool:
@@ -121,9 +133,10 @@ class TrumpHypothesisTracker:
         contradiction against it means something else is wrong (a genuine
         revoke, a misread tile), not that trump changed.
 
-        Has no caller in this module or ``engine.hand`` today; disproving a
-        candidate requires evidence this project's passive camera+mic design
-        cannot get from live play alone.
+        Called from ``engine.hand.HandState._narrow_trump_from_voids`` once a
+        void recorded under a candidate (this tracker's own ``voids`` field)
+        is contradicted by a later play that clearly holds the voided suit
+        under that same candidate.
 
         It cannot loop: a caller should fire this at most once per closed trick
         on a trick that is never closed twice, so the same evidence is never
