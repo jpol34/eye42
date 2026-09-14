@@ -10,20 +10,7 @@ leave a resolved-items trail here (see ROADMAP.md's own maintenance rule).
 
 ## Confirmed bugs
 
-### 1. `live_view.py`'s REPL requires a live console — exits silently under a closed/redirected stdin
-
-`run_repl`'s `for line in sys.stdin:` returns immediately (no error, no
-warning) when stdin is closed or non-interactive (e.g. launched from a
-background job runner, a CI step, or any headless launcher), which then runs
-`cleanup()` and exits with status 0 — indistinguishable in the log from a
-deliberate `quit`. Anyone scripting a session launch needs a real attached
-console (or a REPL redesign that doesn't block the whole program on stdin)
-or the session silently never actually starts recording for more than a
-second. Worth a fix (e.g. don't tie process lifetime to stdin at all — drive
-shutdown from the Flask app or a signal only) before this gets automated
-further.
-
-### 2. `VideoRecorder`'s output has no crash/power-loss resilience
+### 1. `VideoRecorder`'s output has no crash/power-loss resilience
 
 `cv2.VideoWriter` only writes its finalizing moov atom on `release()`
 (`VideoRecorder.close()`), so any non-graceful end of the process — a
@@ -34,6 +21,14 @@ recording outright, while the matching WAV audio (no comparable finalize
 step) survived intact. Worth a more resilient container/write strategy
 (e.g. periodic remuxing, or a format that doesn't need a trailing index)
 before relying on this for a session that can't be easily redone.
+
+### 2. Touching/adjacent tiles during ordinary play still produce spurious plays, distinct from the sweep/cluster cases already fixed
+
+`session_6` (real recorded play) logged three `TilePlayed(player=0, tile=1-1, player_confidence=0.0)` events at 831.9s, 881.5s, and 881.5s again (57ms apart) — all before the *real* 1-1 tile was legitimately played, correctly, at 905.7s (`player=3, confidence=1.0, player_confidence≈1.0`). A domino set has exactly one 1-1 tile, so the three earlier firings are misreads, not real plays.
+
+This happened during ordinary gameplay with small, already-won trick piles (3-4 touching tiles each) sitting in front of players rather than being swept away — not a sweep in progress, and not a large enough merged blob to trigger `unseparated_tile_cluster_regions` (measured largest merged contour in this frame: 37,043px², under the 60,000px² cluster threshold, and with a plausible-tile-shaped aspect ratio of 1.70 — well inside `TileLocalizer`'s own 1.4-3.2 acceptance band, so a naive aspect-ratio-based cluster check wouldn't have caught it either, confirmed by direct measurement before trying that fix).
+
+This is the same class of problem ROADMAP.md's "TileLocalizer can't yet split touching clusters" already tracks (its own real-footage test fixture, `fixtures/real_footage_touching_cluster.jpg`, documents the identical failure mode) — a real fix needs actual tile/cluster separation (e.g. detecting the divider line between two touching tiles), not another motion- or area-based gate like the sweep/cluster fixes above. Flagging here rather than attempting an under-evidenced threshold change.
 
 ## Things to keep watching
 

@@ -135,9 +135,8 @@ class TileLocalizer:
 
 _CLUSTER_AREA_THRESHOLD = _MAX_TILE_AREA * 3  # several touching tiles merged
 # into one blob (a boneyard pile, an in-progress shuffle) rather than a
-# single tile or two touching ones -- confirmed against real footage of an
-# actual shuffle, whose merged-tile-color contour measured over 6x a single
-# tile's own max area.
+# single tile or two touching ones -- real shuffle piles measure well past
+# this multiple of a single tile's own max area.
 
 
 def unseparated_tile_cluster_regions(rectified_frame: np.ndarray) -> List[Tuple[int, int, int, int]]:
@@ -517,7 +516,7 @@ class EventSegmenter:
                 self._settling = False
             return []
 
-        cluster_regions = unseparated_tile_cluster_regions(frame)
+        cluster_regions: Optional[List[Tuple[int, int, int, int]]] = None
         self._sweep_streak = self._sweep_streak + 1 if sweeping else 0
         if self._sweep_streak == _SWEEP_SUSTAINED_FRAMES:
             # Fires once per sweep (streak keeps climbing past this value until
@@ -538,8 +537,7 @@ class EventSegmenter:
                 continue  # tile vanished before settling -- drop the candidate
             remaining.remove(match)
             pending.position = match.position
-            near_cluster = _near_any_region(pending.position, cluster_regions, margin=_ATTRIBUTION_ROI_RADIUS)
-            if sweeping or near_cluster:
+            if sweeping:
                 # A trick-sweep's large-area motion means no play can be
                 # reliably attributed, and _confirmed_positions was just
                 # pruned back toward baseline above -- freeze this
@@ -548,14 +546,24 @@ class EventSegmenter:
                 # pending tile's vote history unboundedly and can't
                 # silently re-confirm an already-played tile whose
                 # confirmed status the prune above just cleared. Progress
-                # already made resumes, unlost, once the sweep/cluster
-                # clears. A candidate near an unseparated tile cluster (a
-                # boneyard pile, an in-progress shuffle) gets the same
-                # treatment: no position within or beside it is a
-                # meaningful settled play -- scoped to nearby candidates
-                # only, so a stationary cluster elsewhere on the table
-                # (a boneyard sitting in its own corner all hand) can't
-                # freeze plays it has nothing to do with.
+                # already made resumes, unlost, once the sweep ends.
+                still_pending.append(pending)
+                continue
+            # Computed lazily (once per frame, cached above) and only once
+            # at least one non-sweeping pending candidate needs it -- a
+            # frame with nothing pending, or where every pending candidate
+            # is already frozen by a sweep, never pays for it at all.
+            if cluster_regions is None:
+                cluster_regions = unseparated_tile_cluster_regions(frame)
+            near_cluster = _near_any_region(pending.position, cluster_regions, margin=_ATTRIBUTION_ROI_RADIUS)
+            if near_cluster:
+                # No position within or beside an unseparated tile cluster
+                # (a boneyard pile, an in-progress shuffle) is a meaningful
+                # settled play -- same freeze-in-place treatment as a
+                # sweep, above. Scoped to nearby candidates only, so a
+                # stationary cluster elsewhere on the table (a boneyard
+                # sitting in its own corner all hand) can't freeze plays
+                # it has nothing to do with.
                 still_pending.append(pending)
                 continue
             pending.stable_frames += 1
