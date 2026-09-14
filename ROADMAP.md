@@ -225,91 +225,34 @@ against real footage.
     trick 3's lead is consumed; a cue heard after trump is already confirmed
     is dropped and doesn't leak forward; a cue meant for trick N doesn't
     bleed into trick N+1.
-  - **(3)'s non-oracle mechanism — design resolved, not yet built.** A live,
-    camera-free mechanism is possible without any lookup into a player's
-    remaining concealed hand: if a player fails to follow led suit S under a
-    live (not yet confirmed) hypothesis H, and that same player later plays
-    a tile that computes as suit S under H, that's a hard contradiction —
-    they can't be void in S under H and also hold/play S under H, so H must
-    be wrong. No folklore weighting needed, just the same publicly-observed
-    play stream every other mechanism here already uses.
-    `TrumpHypothesisTracker.observe_void` is a documented no-op stub for
-    exactly this; `observe_contradiction`'s existing implementation only
-    touches `self.weights` and needs no per-player hand data, so it's a
-    reusable primitive for this signal unchanged.
+  - **(3)'s non-oracle mechanism is built, unit-tested against synthetic
+    hands, and not yet validated against real play.** If a player fails to
+    follow led suit S under a live (not yet confirmed) candidate trump H,
+    and that same player later plays a tile that computes as suit S under
+    H, that's a hard contradiction — they can't be void in S under H and
+    also hold/play S under H, so H must be wrong. No folklore weighting
+    needed, just the same publicly-observed play stream every other
+    mechanism here already uses. `TrumpHypothesisTracker.voids` (keyed
+    `[candidate][player] -> {suit: confidence}`) tracks this independently
+    of `weights`, and `HandState._narrow_trump_from_voids` (called from
+    `_close_trick`, only while trump is unconfirmed — mutually exclusive
+    with `_record_voids`, which takes over once confirmed) reuses
+    `effective_suit`/`follows_suit` and `observe_contradiction` unchanged.
+    `Trick` now carries `play_confidence` per seat so this has real
+    confidence to gate on, rather than the tile-identity-only reads
+    `_record_voids` itself still uses.
 
-    The design: `TrumpHypothesisTracker` gains a `voids: Dict[int, Dict[int,
-    Set[int]]]` field, keyed `[candidate][player] -> {suits}`, independent
-    of `self.weights`. A new `HandState` method, mirroring `_record_voids`'s
-    per-closed-trick cadence but running only while `not
-    trump_tracker.is_confirmed` (the two are mutually exclusive — once
-    confirmed, today's single-trump `_record_voids` takes over; no dead
-    zone at the confirmation transition either, since both gate at the same
-    per-trick-close granularity `_record_voids` already uses), does two
-    things per closed trick, for every `n in range(7)`:
+    Accepted residual risk, matching `_record_voids`'s own documented
+    pattern for gaps of this shape: `voids[n]` has no rollback analogous to
+    `weights`' `_last_weights_before_empty` snapshot/reopen — a false void
+    seeded by one bad tile read has no way to un-seed itself and could
+    produce a later false contradiction. Not solved.
 
-    1. Compute `led_suit_under_n = effective_suit(led_tile, n, None)`, and
-       for each non-leading player whose tile doesn't follow it
-       (`effective_suit(tile, n, led_suit_under_n) != led_suit_under_n`),
-       add `led_suit_under_n` to `voids[n][player]`.
-    2. For every `(player, tile)` played this trick and every suit `S`
-       already in `voids[n][player]` from an earlier trick, check
-       `effective_suit(tile, n, S) == S` — this single general predicate
-       (reusing `effective_suit` as-is, not a new suit-membership check)
-       is true exactly when this tile counts as holding suit `S` under
-       `n`, whether by directly following a trick led in `S`, by being
-       trump-under-`n` when `S == n`, or by simply carrying `S` as one of
-       its two ends. A true result is the contradiction: this player was
-       recorded void in `S` under `n`, yet now clearly holds `S` under
-       `n`, so `n` must be wrong. Fired as `observe_contradiction({n},
-       confidence=min(confidence, player_confidence)` across *both*
-       plays involved — the void-establishing one and the
-       contradiction-revealing one) — both `TilePlayed` confidence
-       dimensions matter here, not just tile-identity confidence: a
-       low-confidence *seat attribution* misassigns the void/contradiction
-       to the wrong player's hypothesis state entirely, the same
-       attribution-error exposure already flagged for the existing
-       single-trump path (`hand.py`'s `_play_tile_now` comment on
-       attribution errors "feeding voids/trump inference under the wrong
-       seat with nothing to catch it").
-
-    This resolves the per-hypothesis void representation and the
-    mutual-exclusivity/hook-point questions from before. One question is
-    resolved as an accepted risk rather than a mechanism, matching this
-    file's existing pattern for gaps of this shape (see `_record_voids`'s
-    own `ACCEPTED RESIDUAL RISK` docstring): unlike `weights`, `voids[n]`
-    has no rollback analogous to `_last_weights_before_empty`. A candidate's
-    *identity* never changes, but a false void seeded by one bad tile read
-    has no defined way to un-seed itself if that same misread also
-    triggered a weights reopen elsewhere — `voids[n]` is only ever cleared
-    on hard confirmation, so a corrupted entry persists and could produce a
-    later false contradiction. Accepted for now, not solved.
-
-    One implementability gap surfaced attempting to build this: `Trick.plays`
-    is `List[Tuple[int, Tile]]` (`trick.py:33`) — no confidence travels with
-    a play past `_play_tile_now`, where `TilePlayed.confidence`/
-    `player_confidence` are read and then dropped. The confidence value this
-    design's `observe_contradiction` call needs isn't available at
-    `_close_trick` time as written; either `Trick` needs to start carrying
-    per-play confidence (a small, contained change, but touches a shared
-    type `_record_voids`/scoring/probability all already read), or this
-    mechanism needs to run at `_play_tile_now`-time instead of
-    `_close_trick`-time to catch the event while its confidence is still
-    live. Pick one and update this entry before implementing — don't guess
-    at code time.
-
-    The contradiction logic itself is pure state-machine logic over a
-    trick/candidate stream — it needs no camera and can be unit-tested
-    against synthetic hands today, the same way `TrumpHypothesisTracker`
-    and `_record_voids`-adjacent code already are elsewhere in this
-    project's test suite. What's actually missing before *building* it for
-    real use is a clean, real multi-trick hand to validate the resulting
-    trump calls against (see "Touching/adjacent tiles..." in
-    `LIVE_FOOTAGE_ISSUES.md` — every recorded session's hand-boundary
-    detection has been corrupted by that bug so far). The design is close
-    to implementable but not quite: resolve the confidence-plumbing gap
-    above first, then this can be built and unit-tested against synthetic
-    hands without waiting on real footage.
+    Still missing before this is trustworthy for real use: a clean, real
+    multi-trick hand to validate the resulting trump calls against (see
+    "Touching/adjacent tiles..." in `LIVE_FOOTAGE_ISSUES.md` — every
+    recorded session's hand-boundary detection has been corrupted by that
+    bug so far).
 - **Recovering a force-closed trick's missing tiles.** When a trick
   force-closes short (fewer than 4 plays observed), the hand is marked
   `disputed` and its count is not trusted for the rest of the hand's

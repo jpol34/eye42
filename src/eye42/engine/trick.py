@@ -37,6 +37,11 @@ class Trick:
     _led_suit: Optional[int] = field(default=None, init=False)
     entitled_leader: Optional[int] = field(default=None, init=False)
     violations: Dict[int, Set[PlayViolation]] = field(default_factory=dict, init=False)
+    # (tile confidence, player/attribution confidence) for whichever seat's play
+    # this is -- keyed separately from `plays` (like `violations`) rather than
+    # folded into its tuples, since most callers (scoring, probability) never
+    # need it; only per-hypothesis void tracking in trump_inference does.
+    play_confidence: Dict[int, Tuple[float, float]] = field(default_factory=dict, init=False)
     superseded_plays: List[Tuple[int, Tile]] = field(default_factory=list, init=False)
     force_closed: bool = field(default=False, init=False)
     closed_early_for_new_trick: bool = field(default=False, init=False)

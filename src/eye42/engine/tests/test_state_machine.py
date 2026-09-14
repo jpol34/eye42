@@ -478,3 +478,92 @@ def test_voids_are_still_recorded_for_a_trick_whose_lead_is_consistent():
     assert hand.voids[1] == {6}
     assert hand.voids[2] == {6}
     assert hand.voids[3] == {6}
+
+
+def test_void_contradiction_narrows_an_unconfirmed_trump_hypothesis():
+    """No explicit trump call -- under the live, unconfirmed candidate 6,
+    seat 1 doesn't follow the trick-1 lead's suit-3 (a void under that
+    candidate), then in trick 2 plays a tile that itself carries suit 3
+    under candidate 6 -- a hard contradiction disproving 6, with no lookup
+    into anyone's concealed hand."""
+    hand = HandState(dealer=3)
+    hand.bid(0, 30)
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)
+
+    for player, tile in [
+        (0, Tile.of(3, 2)), (1, Tile.of(5, 4)), (2, Tile.of(2, 1)), (3, Tile.of(6, 3)),
+    ]:
+        hand.play_tile(TilePlayed(player=player, tile=tile))
+
+    assert 3 in hand.trump_tracker.voids[6][1]
+    weight_before = hand.trump_tracker.weights[6]
+
+    for player, tile in [
+        (3, Tile.of(1, 1)), (0, Tile.of(0, 0)), (1, Tile.of(3, 0)), (2, Tile.of(2, 2)),
+    ]:
+        hand.play_tile(TilePlayed(player=player, tile=tile))
+
+    assert hand.trump_tracker.weights[6] < weight_before
+
+
+def test_narrow_trump_from_voids_fires_at_most_once_per_candidate_per_trick():
+    """observe_contradiction's own contract: at most once per closed trick.
+    Two independent contradictions against the same candidate within one
+    trick (here, two different players each revealing a suit they were
+    separately voided in under the same candidate) must collapse into a
+    single call, not double-penalize that candidate."""
+    hand = HandState(dealer=3)
+    hand.bid(0, 30)
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)
+
+    # Trick 1: seat 1 doesn't follow -- void suit 3 under candidate 6.
+    for player, tile in [
+        (0, Tile.of(3, 2)), (1, Tile.of(5, 4)), (2, Tile.of(3, 0)), (3, Tile.of(6, 1)),
+    ]:
+        hand.play_tile(TilePlayed(player=player, tile=tile))
+    assert 3 in hand.trump_tracker.voids[6][1]
+
+    # Trick 2: seat 2 doesn't follow -- void a *different* suit, 4, under
+    # candidate 6.
+    for player, tile in [
+        (3, Tile.of(4, 1)), (0, Tile.of(4, 2)), (1, Tile.of(4, 3)), (2, Tile.of(5, 2)),
+    ]:
+        hand.play_tile(TilePlayed(player=player, tile=tile))
+    assert 4 in hand.trump_tracker.voids[6][2]
+
+    calls = []
+    original = hand.trump_tracker.observe_contradiction
+    hand.trump_tracker.observe_contradiction = lambda disproven, confidence: (
+        calls.append(disproven), original(disproven, confidence),
+    )
+
+    # Trick 3: seat 1 reveals suit 3 and seat 2 reveals suit 4 -- two
+    # independent contradictions against candidate 6, in the same trick.
+    for player, tile in [
+        (0, Tile.of(2, 0)), (1, Tile.of(3, 1)), (2, Tile.of(4, 0)), (3, Tile.of(5, 0)),
+    ]:
+        hand.play_tile(TilePlayed(player=player, tile=tile))
+
+    assert len([c for c in calls if c == {6}]) == 1
+
+
+def test_void_narrowing_stops_once_trump_is_confirmed():
+    """Once confirmed, _record_voids is the sole authority; per-hypothesis
+    void tracking must not keep running alongside it."""
+    hand = HandState(dealer=3)
+    hand.bid(0, 30)
+    hand.bid_pass(1)
+    hand.bid_pass(2)
+    hand.bid_pass(3)
+    hand.call_trump(0, trump=6)
+
+    for player, tile in [
+        (0, Tile.of(3, 2)), (1, Tile.of(5, 4)), (2, Tile.of(2, 1)), (3, Tile.of(6, 3)),
+    ]:
+        hand.play_tile(TilePlayed(player=player, tile=tile))
+
+    assert hand.trump_tracker.voids[6][1] == {}

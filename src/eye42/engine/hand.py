@@ -457,6 +457,11 @@ class HandState:
             ))
 
         violations = trick.play(event.player, event.tile, strict=False)
+        if PlayViolation.TRICK_FULL not in violations and PlayViolation.SEAT_ALREADY_PLAYED not in violations:
+            # Only a play actually recorded into trick.plays (not bounced to
+            # superseded_plays) should ever set this -- a rejected duplicate's
+            # confidence must never clobber the real play's.
+            trick.play_confidence[event.player] = (event.confidence, event.player_confidence)
         self._log_play_violations(event, trick, violations)
 
         if trick.is_complete:
@@ -498,6 +503,7 @@ class HandState:
 
     def _close_trick(self, trick: Trick) -> None:
         self._record_voids(trick)
+        self._narrow_trump_from_voids(trick)
         if self.scorer is None:
             # Explicit guard, not an assert: `python -O` strips asserts, and a
             # trick can complete with the contract set but the scorer never
@@ -565,6 +571,60 @@ class HandState:
                 continue
             if effective_suit(tile, trump, trick.led_suit) != trick.led_suit:
                 self.voids[player].add(trick.led_suit)
+
+    def _narrow_trump_from_voids(self, trick: Trick) -> None:
+        """Mid-hand trump narrowing from observed void contradictions, live
+        only while trump is still unconfirmed -- once confirmed,
+        ``_record_voids`` is the authoritative single-trump mechanism and
+        this stops being consulted.
+
+        For every candidate trump ``n``, a player who doesn't follow this
+        trick's led suit *under n* is recorded void in that suit under n
+        (skipping a seat already flagged with a real ``REVOKE`` this trick,
+        same as ``_record_voids`` -- a genuine revoke means they still hold
+        it, so recording a void would be a false constraint). A later play
+        (this trick or a future one) that computes as a previously-voided
+        suit under n is a hard contradiction: they can't be void in that
+        suit under n and also hold/play it under n, so n must be wrong.
+        Reuses ``effective_suit``/``follows_suit`` (already parameterized by
+        an arbitrary trump) and ``TrumpHypothesisTracker.observe_contradiction``
+        unchanged -- no folklore weighting, just the same publicly-observed
+        play stream. Multiple independent contradictions against the same
+        candidate within one trick collapse into a single
+        ``observe_contradiction`` call on the worst confidence among them,
+        honoring that method's own at-most-once-per-trick contract.
+        """
+        if self.trump_tracker.is_confirmed:
+            return
+        if trick.led_suit is None or not trick.plays:
+            return
+        _, led_tile = trick.plays[0]
+
+        for n in range(7):
+            voids_n = self.trump_tracker.voids[n]
+            led_suit_under_n = effective_suit(led_tile, n, None)
+            for player, tile in trick.plays[1:]:
+                if PlayViolation.REVOKE in trick.violations.get(player, set()):
+                    continue  # a real revoke means they still hold it -- not a void
+                if not follows_suit(tile, n, led_suit_under_n):
+                    tile_confidence, player_confidence = trick.play_confidence.get(player, (1.0, 1.0))
+                    voids_n[player][led_suit_under_n] = min(tile_confidence, player_confidence)
+
+            # At most one observe_contradiction call per candidate per trick
+            # (its own contract, trump_inference.py) -- collect every match
+            # this trick found for `n` and fire once on the worst confidence
+            # among them, rather than compounding the penalty per match.
+            contradiction_confidence: Optional[float] = None
+            for player, tile in trick.plays:
+                tile_confidence, player_confidence = trick.play_confidence.get(player, (1.0, 1.0))
+                reveal_confidence = min(tile_confidence, player_confidence)
+                for suit, void_confidence in voids_n[player].items():
+                    if follows_suit(tile, n, suit):
+                        match_confidence = min(void_confidence, reveal_confidence)
+                        if contradiction_confidence is None or match_confidence < contradiction_confidence:
+                            contradiction_confidence = match_confidence
+            if contradiction_confidence is not None:
+                self.trump_tracker.observe_contradiction({n}, confidence=contradiction_confidence)
 
     def _led_suit_is_trustworthy(self, trick: Trick, trump: int) -> bool:
         """A trick's ``led_suit`` was frozen when it was led, under whatever
