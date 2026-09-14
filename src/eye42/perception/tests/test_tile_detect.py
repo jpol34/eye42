@@ -321,6 +321,34 @@ def test_segmenter_reuses_a_position_for_a_later_trick_after_a_sustained_sweep()
     assert played[0].tile == Tile.of(6, 6)
 
 
+def test_segmenter_never_confirms_a_play_while_a_sweep_is_in_progress():
+    """A sustained sweep resets _confirmed_positions (see the earlier reuse
+    test), which un-confirms an already-played tile that's still physically
+    sitting on the table a few frames from being picked up. If that
+    still-present tile were allowed to cross the settle threshold mid-sweep,
+    it would get re-reported as a brand-new play of the tile it already
+    was. No play may ever be confirmed while sweeping is True, however long
+    the sweep runs."""
+    segmenter = EventSegmenter(settle_frames=3)
+    quiet, busy = _sweep_frames()
+    _settle_on_empty_table(segmenter, quiet)
+    trick_one = [TileObservation(tile=Tile.of(4, 2), confidence=1.0, position=(10.0, 10.0), frame_index=0)]
+
+    for _ in range(3):
+        played = segmenter.feed(quiet, trick_one)
+    assert len(played) == 1  # trick one's play confirmed
+
+    # The tile never actually leaves (unlike the reuse test) -- it's still
+    # sitting at the same position while a sustained sweep (elsewhere, or
+    # falsely triggered) resets _confirmed_positions and keeps running well
+    # past the settle threshold.
+    played = []
+    for i in range(_SWEEP_SUSTAINED_FRAMES + 10):
+        played += segmenter.feed(busy if i % 2 == 0 else quiet, trick_one)
+
+    assert played == []
+
+
 def test_segmenter_still_dedupes_same_position_without_a_sweep_between_plays():
     """Without a sustained sweep in between, a repeat observation at an
     already-confirmed position must stay suppressed -- the sweep-triggered

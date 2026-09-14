@@ -495,15 +495,24 @@ class EventSegmenter:
             if match is None:
                 continue  # tile vanished before settling -- drop the candidate
             remaining.remove(match)
-            pending.stable_frames += 1
             pending.position = match.position
+            if sweeping:
+                # A trick-sweep's large-area motion means no play can be
+                # reliably attributed, and _confirmed_positions was just
+                # pruned back toward baseline above -- freeze this
+                # candidate's progress rather than accumulating votes or
+                # confirming, so a sweep that runs long can't grow a
+                # pending tile's vote history unboundedly and can't
+                # silently re-confirm an already-played tile whose
+                # confirmed status the prune above just cleared. Progress
+                # already made resumes, unlost, once the sweep ends.
+                still_pending.append(pending)
+                continue
+            pending.stable_frames += 1
             pending.votes.setdefault(match.tile, []).append(match.confidence)
             if pending.stable_frames >= self.settle_frames:
                 self._confirmed_positions.append(pending.position)
-                if sweeping:
-                    player, player_confidence = 0, 0.0
-                else:
-                    player, player_confidence = self._attribute(pending.position)
+                player, player_confidence = self._attribute(pending.position)
                 tile, confidence = _resolve_identity(pending.votes)
                 played.append(TilePlayed(
                     player=player, tile=tile, confidence=confidence,
