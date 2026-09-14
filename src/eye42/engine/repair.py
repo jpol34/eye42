@@ -42,6 +42,10 @@ class IrregularityKind(Enum):
     TRICK_COUNT_EXCEEDED = auto()  # a play arriving after all 7 tricks are complete
     TRICK_CLOSED_EARLY = auto()  # a seat-already-played read force-started the next trick
     AMBIGUOUS_ATTRIBUTION = auto()  # a play recorded on a shaky guess at which seat played it
+    SPLASH_PLUNGE_INFERRED = auto()  # a plain marks contract's trump-caller role landed on
+    # the bidder's partner -- reclassified as splash/plunge rather than flagged as
+    # out-of-turn/wrong-seat, but this is inferred (not an explicit call), so it
+    # still needs confirmation
 
 
 @dataclass(frozen=True)
