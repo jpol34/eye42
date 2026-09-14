@@ -18,6 +18,7 @@ from eye42.perception.tile_detect import (
     TableRectifier,
     TileLocalizer,
     TileObservation,
+    unseparated_tile_cluster_regions,
 )
 
 _FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -123,6 +124,24 @@ def test_localizer_ignores_skin_tone_on_real_footage_with_hands_in_frame():
     assert len(regions) == 1
     cx, cy = regions[0].center
     assert abs(cx - 590) < 5 and abs(cy - 273) < 5
+
+
+# ---------------------------------------------------------------------------
+# unseparated_tile_cluster_regions
+# ---------------------------------------------------------------------------
+
+def test_unseparated_tile_cluster_regions_detects_a_real_shuffle_pile():
+    """``fixtures/real_footage_shuffle_pile.jpg`` is a rectified crop from a
+    real in-progress shuffle: a couple dozen tiles scrambled together. Its
+    largest tile-color contour measured over 6x a single tile's own max
+    area -- comfortably past the cluster threshold."""
+    crop = cv2.imread(str(_FIXTURES_DIR / "real_footage_shuffle_pile.jpg"))
+    assert len(unseparated_tile_cluster_regions(crop)) >= 1
+
+
+def test_unseparated_tile_cluster_regions_is_empty_for_an_isolated_tile():
+    crop = cv2.imread(str(_FIXTURES_DIR / "real_footage_hands_in_frame.jpg"))
+    assert unseparated_tile_cluster_regions(crop) == []
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +338,78 @@ def test_segmenter_reuses_a_position_for_a_later_trick_after_a_sustained_sweep()
 
     assert len(played) == 1
     assert played[0].tile == Tile.of(6, 6)
+
+
+def test_segmenter_never_confirms_a_play_while_a_sweep_is_in_progress():
+    """A sustained sweep resets _confirmed_positions (see the earlier reuse
+    test), which un-confirms an already-played tile that's still physically
+    sitting on the table a few frames from being picked up. If that
+    still-present tile were allowed to cross the settle threshold mid-sweep,
+    it would get re-reported as a brand-new play of the tile it already
+    was. No play may ever be confirmed while sweeping is True, however long
+    the sweep runs."""
+    segmenter = EventSegmenter(settle_frames=3)
+    quiet, busy = _sweep_frames()
+    _settle_on_empty_table(segmenter, quiet)
+    trick_one = [TileObservation(tile=Tile.of(4, 2), confidence=1.0, position=(10.0, 10.0), frame_index=0)]
+
+    for _ in range(3):
+        played = segmenter.feed(quiet, trick_one)
+    assert len(played) == 1  # trick one's play confirmed
+
+    # The tile never actually leaves (unlike the reuse test) -- it's still
+    # sitting at the same position while a sustained sweep (elsewhere, or
+    # falsely triggered) resets _confirmed_positions and keeps running well
+    # past the settle threshold.
+    played = []
+    for i in range(_SWEEP_SUSTAINED_FRAMES + 10):
+        played += segmenter.feed(busy if i % 2 == 0 else quiet, trick_one)
+
+    assert played == []
+
+
+def test_segmenter_never_confirms_a_play_beside_a_real_unseparated_cluster():
+    """A real shuffle pile produces no motion at all once players pause
+    mid-shuffle (unlike a trick-sweep's ballistic motion), so it isn't
+    caught by _sweep_in_progress -- observed for real: a shuffle pile held
+    an isolated-looking observation stable long enough to cross the settle
+    threshold and get reported as a legitimate play, with player_confidence
+    0.0 (no real motion trail, since nothing genuinely arrived there from a
+    player's hand). unseparated_tile_cluster_regions catches the pile
+    itself so no observation within or beside it is ever confirmed as a
+    play."""
+    segmenter = EventSegmenter(settle_frames=3)
+    shuffle_pile = cv2.imread(str(_FIXTURES_DIR / "real_footage_shuffle_pile.jpg"))
+    empty = np.zeros(shuffle_pile.shape, dtype=np.uint8)
+    _settle_on_empty_table(segmenter, empty)
+
+    edge_of_pile = [TileObservation(tile=Tile.of(1, 1), confidence=0.6, position=(33.9, 77.0), frame_index=0)]
+    played: list = []
+    for _ in range(10):
+        played += segmenter.feed(shuffle_pile, edge_of_pile)
+
+    assert played == []
+
+
+def test_segmenter_still_confirms_a_play_far_from_a_stationary_cluster():
+    """A boneyard is a normal fixture that sits on the table, unmoving, for
+    a whole hand (see the baseline-settling docstring above) -- it isn't a
+    brief in-progress shuffle, so its own persistent tile-color cluster
+    must not freeze a legitimate, unrelated play happening elsewhere on the
+    table. Cluster suppression is scoped to candidates near the cluster's
+    own bounding region, not the whole frame."""
+    segmenter = EventSegmenter(settle_frames=3)
+    shuffle_pile = cv2.imread(str(_FIXTURES_DIR / "real_footage_shuffle_pile.jpg"))
+    empty = np.zeros(shuffle_pile.shape, dtype=np.uint8)
+    _settle_on_empty_table(segmenter, empty)
+
+    far_from_pile = [TileObservation(tile=Tile.of(4, 2), confidence=1.0, position=(1100.0, 1100.0), frame_index=0)]
+    played: list = []
+    for _ in range(3):
+        played += segmenter.feed(shuffle_pile, far_from_pile)
+
+    assert len(played) == 1
+    assert played[0].tile == Tile.of(4, 2)
 
 
 def test_segmenter_still_dedupes_same_position_without_a_sweep_between_plays():

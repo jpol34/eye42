@@ -40,6 +40,7 @@ import signal
 import sys
 import threading
 import time
+import traceback
 import wave
 from pathlib import Path
 from typing import Callable, Optional
@@ -421,45 +422,68 @@ def _parse_tile(spec: str) -> Tile:
     return Tile.of(int(high), int(low))
 
 
-def run_repl(session: Session) -> None:
+def run_repl(session: Session, shutdown: threading.Event) -> None:
+    """Runs on its own thread, never the main one: a closed/redirected
+    stdin (any non-interactive launcher -- a background job runner, a CI
+    step) hits immediate EOF on the very first read, which would otherwise
+    make `for line in sys.stdin` return right away -- indistinguishable
+    from a deliberate `quit` if that tore the whole session down. Recording
+    and perception don't need a REPL to keep running, so an exhausted
+    stdin here just ends this thread quietly; the process as a whole keeps
+    running (its daemon threads: camera, recorders, perception, Flask)
+    until ``shutdown`` is set, either by a real `quit` below or by a
+    signal handler."""
     print("eye42 live-session REPL. Type 'help' for commands, 'quit' to stop.")
-    for line in sys.stdin:
-        parts = line.split()
-        if not parts:
-            continue
-        cmd, *args = parts
-        try:
-            if cmd == "quit":
-                break
-            elif cmd == "help":
-                print(__doc__)
-            elif cmd == "deal":
-                dealer, c0, c1, c2, c3 = args
-                counts = {0: int(c0), 1: int(c1), 2: int(c2), 3: int(c3)}
-                session.ingest(TilesDealt(dealer=int(dealer), counts=counts))
-            elif cmd == "bid":
-                player, amount = args[0], args[1]
-                marks = int(args[2]) if len(args) > 2 else 0
-                session.ingest(BidMade(player=int(player), amount=int(amount), marks=marks))
-            elif cmd == "pass":
-                session.ingest(Passed(player=int(args[0])))
-            elif cmd == "trump":
-                session.ingest(TrumpCalled(caller=int(args[0]), trump=int(args[1])))
-            elif cmd == "cue":
-                session.ingest(TrumpCueHeard(speaker=int(args[0]), cue=args[1]))
-            elif cmd == "play":
-                session.ingest(TilePlayed(player=int(args[0]), tile=_parse_tile(args[1])))
-            elif cmd == "irregular":
-                session.ingest(IrregularEndSignal(tricks_played_so_far=int(args[0])))
-            elif cmd == "end_hand":
-                tricks = int(args[0]) if args else None
-                session.end_hand(tricks)
-            elif cmd == "dealer":
-                session.observe_dealer(int(args[0]))
-            else:
-                print(f"unrecognized command: {cmd!r} (try 'help')")
-        except (ValueError, IndexError) as exc:
-            print(f"bad command {line.strip()!r}: {exc}")
+    try:
+        for line in sys.stdin:
+            parts = line.split()
+            if not parts:
+                continue
+            cmd, *args = parts
+            try:
+                if cmd == "quit":
+                    shutdown.set()
+                    break
+                elif cmd == "help":
+                    print(__doc__)
+                elif cmd == "deal":
+                    dealer, c0, c1, c2, c3 = args
+                    counts = {0: int(c0), 1: int(c1), 2: int(c2), 3: int(c3)}
+                    session.ingest(TilesDealt(dealer=int(dealer), counts=counts))
+                elif cmd == "bid":
+                    player, amount = args[0], args[1]
+                    marks = int(args[2]) if len(args) > 2 else 0
+                    session.ingest(BidMade(player=int(player), amount=int(amount), marks=marks))
+                elif cmd == "pass":
+                    session.ingest(Passed(player=int(args[0])))
+                elif cmd == "trump":
+                    session.ingest(TrumpCalled(caller=int(args[0]), trump=int(args[1])))
+                elif cmd == "cue":
+                    session.ingest(TrumpCueHeard(speaker=int(args[0]), cue=args[1]))
+                elif cmd == "play":
+                    session.ingest(TilePlayed(player=int(args[0]), tile=_parse_tile(args[1])))
+                elif cmd == "irregular":
+                    session.ingest(IrregularEndSignal(tricks_played_so_far=int(args[0])))
+                elif cmd == "end_hand":
+                    tricks = int(args[0]) if args else None
+                    session.end_hand(tricks)
+                elif cmd == "dealer":
+                    session.observe_dealer(int(args[0]))
+                else:
+                    print(f"unrecognized command: {cmd!r} (try 'help')")
+            except (ValueError, IndexError) as exc:
+                print(f"bad command {line.strip()!r}: {exc}")
+    except Exception:
+        # This now runs on its own thread (see the module-level docstring
+        # above), so an unexpected bug here would otherwise just kill this
+        # thread silently -- main() would stay blocked on `shutdown.wait()`
+        # forever with no REPL and no cleanup(), never finalizing the
+        # recording. Set shutdown before re-raising so the process still
+        # winds down the same way an uncaught exception here would have on
+        # the main thread.
+        traceback.print_exc()
+        shutdown.set()
+        raise
 
 
 def build_app(session: Session) -> Flask:
@@ -571,8 +595,10 @@ def main() -> None:
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
+    shutdown = threading.Event()
+    threading.Thread(target=run_repl, args=(session, shutdown), daemon=True).start()
     try:
-        run_repl(session)
+        shutdown.wait()
     finally:
         cleanup()
 

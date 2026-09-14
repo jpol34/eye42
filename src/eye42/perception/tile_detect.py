@@ -91,24 +91,30 @@ class TileRegion:
     rect_size: Tuple[float, float]
 
 
+def _tile_color_contours(rectified_frame: np.ndarray) -> List[np.ndarray]:
+    """The tile-color mask + contour extraction shared by ``TileLocalizer``
+    and cluster detection, so the two never drift apart under future
+    threshold/kernel tuning."""
+    hsv = cv2.cvtColor(rectified_frame, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, _TILE_HSV_LOW, _TILE_HSV_HIGH)
+    # A tile's own pip-divider line is bright/white and can cut its green
+    # mask into two separate blobs -- closing with a fixed kernel only
+    # bridges that gap up to some rectified resolution, since the
+    # divider's pixel width scales with resolution too; sizing the
+    # kernel off the frame itself keeps the bridge reliable regardless
+    # of the rectifier's output size.
+    kernel_size = max(5, round(min(rectified_frame.shape[:2]) * 0.005)) | 1  # odd size
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((kernel_size, kernel_size), np.uint8))
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    return contours
+
+
 class TileLocalizer:
     """Finds candidate tile bounding boxes/orientations on a rectified frame."""
 
     def find_tiles(self, rectified_frame: np.ndarray) -> List[TileRegion]:
-        hsv = cv2.cvtColor(rectified_frame, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv, _TILE_HSV_LOW, _TILE_HSV_HIGH)
-        # A tile's own pip-divider line is bright/white and can cut its green
-        # mask into two separate blobs -- closing with a fixed kernel only
-        # bridges that gap up to some rectified resolution, since the
-        # divider's pixel width scales with resolution too; sizing the
-        # kernel off the frame itself keeps the bridge reliable regardless
-        # of the rectifier's output size.
-        kernel_size = max(5, round(min(rectified_frame.shape[:2]) * 0.005)) | 1  # odd size
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((kernel_size, kernel_size), np.uint8))
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
         regions: List[TileRegion] = []
-        for contour in contours:
+        for contour in _tile_color_contours(rectified_frame):
             area = cv2.contourArea(contour)
             if not (_MIN_TILE_AREA <= area <= _MAX_TILE_AREA):
                 continue
@@ -125,6 +131,40 @@ class TileLocalizer:
                 angle=angle, rect_size=(w, h),
             ))
         return regions
+
+
+_CLUSTER_AREA_THRESHOLD = _MAX_TILE_AREA * 3  # several touching tiles merged
+# into one blob (a boneyard pile, an in-progress shuffle) rather than a
+# single tile or two touching ones -- real shuffle piles measure well past
+# this multiple of a single tile's own max area.
+
+
+def unseparated_tile_cluster_regions(rectified_frame: np.ndarray) -> List[Tuple[int, int, int, int]]:
+    """Bounding boxes (x, y, w, h) of contours far too large to be one or two
+    touching tiles. ``TileLocalizer.find_tiles`` already rejects such an
+    oversized contour as non-tile-shaped, but that leaves real, isolated
+    tiles right at the edge of the same cluster free to be tracked as
+    ordinary settled plays even while the cluster itself (a shuffle in
+    progress, tiles still being scrambled) makes any single position within
+    or beside it meaningless to report as a play. Scoped to bounding boxes,
+    not a frame-wide flag, so a persistent but stationary cluster elsewhere
+    on the table (a boneyard sitting in its own corner all hand) can't
+    freeze plays it has nothing to do with."""
+    return [
+        cv2.boundingRect(c)
+        for c in _tile_color_contours(rectified_frame)
+        if cv2.contourArea(c) > _CLUSTER_AREA_THRESHOLD
+    ]
+
+
+def _near_any_region(
+    position: Tuple[float, float], regions: List[Tuple[int, int, int, int]], margin: float,
+) -> bool:
+    x, y = position
+    return any(
+        rx - margin <= x <= rx + rw + margin and ry - margin <= y <= ry + rh + margin
+        for rx, ry, rw, rh in regions
+    )
 
 
 def extract_aligned_crop(rectified_frame: np.ndarray, region: TileRegion, margin: float = 1.3) -> np.ndarray:
@@ -476,6 +516,7 @@ class EventSegmenter:
                 self._settling = False
             return []
 
+        cluster_regions: Optional[List[Tuple[int, int, int, int]]] = None
         self._sweep_streak = self._sweep_streak + 1 if sweeping else 0
         if self._sweep_streak == _SWEEP_SUSTAINED_FRAMES:
             # Fires once per sweep (streak keeps climbing past this value until
@@ -495,15 +536,41 @@ class EventSegmenter:
             if match is None:
                 continue  # tile vanished before settling -- drop the candidate
             remaining.remove(match)
-            pending.stable_frames += 1
             pending.position = match.position
+            if sweeping:
+                # A trick-sweep's large-area motion means no play can be
+                # reliably attributed, and _confirmed_positions was just
+                # pruned back toward baseline above -- freeze this
+                # candidate's progress rather than accumulating votes or
+                # confirming, so a sweep that runs long can't grow a
+                # pending tile's vote history unboundedly and can't
+                # silently re-confirm an already-played tile whose
+                # confirmed status the prune above just cleared. Progress
+                # already made resumes, unlost, once the sweep ends.
+                still_pending.append(pending)
+                continue
+            # Computed lazily (once per frame, cached above) and only once
+            # at least one non-sweeping pending candidate needs it -- a
+            # frame with nothing pending, or where every pending candidate
+            # is already frozen by a sweep, never pays for it at all.
+            if cluster_regions is None:
+                cluster_regions = unseparated_tile_cluster_regions(frame)
+            near_cluster = _near_any_region(pending.position, cluster_regions, margin=_ATTRIBUTION_ROI_RADIUS)
+            if near_cluster:
+                # No position within or beside an unseparated tile cluster
+                # (a boneyard pile, an in-progress shuffle) is a meaningful
+                # settled play -- same freeze-in-place treatment as a
+                # sweep, above. Scoped to nearby candidates only, so a
+                # stationary cluster elsewhere on the table (a boneyard
+                # sitting in its own corner all hand) can't freeze plays
+                # it has nothing to do with.
+                still_pending.append(pending)
+                continue
+            pending.stable_frames += 1
             pending.votes.setdefault(match.tile, []).append(match.confidence)
             if pending.stable_frames >= self.settle_frames:
                 self._confirmed_positions.append(pending.position)
-                if sweeping:
-                    player, player_confidence = 0, 0.0
-                else:
-                    player, player_confidence = self._attribute(pending.position)
+                player, player_confidence = self._attribute(pending.position)
                 tile, confidence = _resolve_identity(pending.votes)
                 played.append(TilePlayed(
                     player=player, tile=tile, confidence=confidence,
