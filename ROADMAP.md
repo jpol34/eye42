@@ -24,9 +24,6 @@ failure mode several entries below already call out. Once footage/capture
 exists, these are the first candidates to revisit (each points at its full
 entry elsewhere in this file, not restated here):
 
-- Ranked multi-candidate tile classification and the engine-side conflict
-  reconciliation it would unlock (`TileIdentityClassifier.classify`, under
-  "Known gaps / ideas under consideration").
 - Trump inference via observed void contradictions beyond the first lead
   ("Trump determination beyond the first lead", item 3).
 - Force-closed trick recovery via the trick winner's pile ("Recovering a
@@ -289,19 +286,25 @@ against real footage.
   `tools/live_view.py` records video and audio as two independently
   wall-clock-paced but separate files with no recorded shared T0, so there's
   an unquantified startup-latency skew between them to account for.
-- **`perception.tile_detect`'s `TileIdentityClassifier.classify` needs a real
-  implementation** — its interface already returns ranked candidates, not a
-  single best guess, matching `TrumpHypothesisTracker`'s weighted-candidate
-  convention; `OpenCVTileClassifier` (the concrete implementation) only ever
-  returns one guess or none. `EventSegmenter` already fuses a settling tile's
-  identity by plurality vote across the frames in its settle window (see
-  `_resolve_identity`), which only needs a single guess per frame — a real
-  ranked-candidate implementation is a separate, larger step. Once it exists,
-  a natural follow-up is engine-side reconciliation: when `HandState` logs a
-  conflict for a tile already seen elsewhere, try the classifier's
-  next-ranked candidate against tiles not yet accounted for before falling
-  back to today's log-and-flag behavior. Needs real footage to validate
-  before attempting either — not to be built speculatively.
+- **Engine-side reconciliation for `TileIdentityClassifier`'s ranked
+  candidates.** `OpenCVTileClassifier.classify` returns a second candidate
+  when exactly one tile half's merged-blob pip count is genuinely ambiguous
+  between two readings (both halves ambiguous at once yields no second
+  candidate — combining two independent guesses isn't a measurement).
+  `EventSegmenter`'s settle window (`_resolve_identity`) only consumes each
+  frame's single top candidate; there's no per-frame provenance today for
+  threading a settled tile's alternates through to the `TilePlayed` it
+  emits. A natural follow-up is engine-side
+  reconciliation — when `HandState` logs a conflict for a tile already seen
+  elsewhere, try the classifier's next-ranked candidate against tiles not
+  yet accounted for before falling back to today's log-and-flag behavior —
+  but that needs its own design pass first: how a settled tile's alternates
+  survive the multi-frame vote, whether the *earlier* play (not just the
+  conflicting new one) might be the actual misread, and how reinterpreting
+  a tile's identity stays consistent with `_seen_tiles`/void-tracking/trump
+  inference that already ran against the original reading. Not to be
+  attempted speculatively — validate any design against real recorded
+  footage (`tools/replay_video.py`) before landing it.
 - **Self-caught in-the-moment retraction** (a `PlayRetracted` event) and
   rolling back trump-inference/void state for it — today a swapped-in tile
   just gets logged as its own irregularity and the hand keeps going, which

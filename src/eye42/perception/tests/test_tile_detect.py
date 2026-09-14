@@ -8,6 +8,7 @@ import pytest
 
 from eye42.engine.tiles import Tile
 from eye42.perception.synth_data import BODY_COLOR as _BODY_COLOR
+from eye42.perception.synth_data import PIP_COLOR as _PIP_COLOR
 from eye42.perception.synth_data import draw_tile_crop as _make_tile_crop
 from eye42.perception.synth_data import draw_tile_half as _make_half
 from eye42.perception.tile_detect import (
@@ -179,6 +180,40 @@ def test_classifier_does_not_count_a_dark_non_white_pin_as_a_pip():
     tile, _ = OpenCVTileClassifier().classify(crop)[0]
 
     assert tile == Tile.of(3, 0)
+
+
+def test_classifier_offers_a_second_candidate_for_a_borderline_merged_blob():
+    """A half with three isolated single pips plus one touching-pip blob
+    whose area ratio sits ambiguously between two counts (here 5 vs. 6)
+    should offer both readings, not silently commit to the primary one."""
+    top = _make_half([(30, 30), (30, 90), (90, 30)])
+    cv2.rectangle(top, (60, 60), (80, 81), _PIP_COLOR, -1)  # a merged blob, borderline 5-vs-6 pips
+    bottom = _make_half([])
+    crop = np.vstack([top, bottom])
+
+    result = OpenCVTileClassifier().classify(crop)
+
+    assert len(result) == 2
+    primary, primary_confidence = result[0]
+    alt, alt_confidence = result[1]
+    assert primary == Tile.of(5, 0)
+    assert alt == Tile.of(6, 0)
+    assert alt_confidence < primary_confidence
+
+
+def test_classifier_offers_no_second_candidate_when_both_halves_are_borderline():
+    """Two independently ambiguous halves would need to combine into several
+    equally-unfounded guesses to produce a single alternate -- not offering
+    one at all is more honest than picking an arbitrary combination."""
+    top = _make_half([(30, 30), (30, 90), (90, 30)])
+    cv2.rectangle(top, (60, 60), (80, 81), _PIP_COLOR, -1)
+    bottom = _make_half([(30, 30), (30, 90), (90, 30)])
+    cv2.rectangle(bottom, (60, 60), (80, 81), _PIP_COLOR, -1)
+    crop = np.vstack([top, bottom])
+
+    result = OpenCVTileClassifier().classify(crop)
+
+    assert len(result) == 1
 
 
 # ---------------------------------------------------------------------------

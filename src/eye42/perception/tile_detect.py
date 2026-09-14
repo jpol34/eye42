@@ -226,9 +226,10 @@ _MIN_PIP_AREA = 8.0
 _MAX_PIP_AREA = 450.0
 _MERGED_BLOB_RATIO = 1.6  # a blob this many times the half's own single-pip unit is treated as N touching pips
 _MAX_PIPS_PER_HALF = 6  # a blob estimating past this is contamination (crop-edge background), not touching pips
+_ALT_COUNT_MARGIN = 0.15  # a ratio within this fraction of a rounding boundary is genuinely ambiguous
 
 
-def _count_pips(half: np.ndarray) -> Tuple[int, bool]:
+def _count_pips(half: np.ndarray) -> Tuple[int, bool, Optional[int]]:
     """Counts pips in one tile half via color, not Hough circles: the spinner
     pin is the wrong color (metal/black, not white), so it never survives
     this filter, and a genuinely blank half correctly returns 0 rather than
@@ -246,34 +247,52 @@ def _count_pips(half: np.ndarray) -> Tuple[int, bool]:
     session's camera happens to be at. A ratio past what any real domino
     half could hold is treated as background contamination (e.g. a sliver
     of table caught at a rotated crop's corner) and discarded rather than
-    folded into the count. Returns (count, any_borderline) so the caller can
-    reflect an estimated or discarded blob in its confidence.
+    folded into the count.
+
+    Returns (count, any_borderline, alt_count) so the caller can reflect an
+    estimated or discarded blob in its confidence, and offer a second
+    plausible reading when there's exactly one. ``alt_count`` is only ever
+    set when a single blob's area ratio sits close enough to a rounding
+    boundary to be genuinely ambiguous between two counts; a half with more
+    than one independently ambiguous blob has no well-defined single
+    alternate (combining separate guesses would be exactly that -- a guess,
+    not a measurement), so it reports None.
     """
     if half.size == 0:
-        return 0, True
+        return 0, True, None
     hsv = cv2.cvtColor(half, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, _PIP_HSV_LOW, _PIP_HSV_HIGH)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     areas = [cv2.contourArea(c) for c in contours]
     areas = [a for a in areas if a >= _MIN_PIP_AREA]
     if not areas:
-        return 0, False
+        return 0, False, None
 
     single_pip_candidates = [a for a in areas if a <= _MAX_PIP_AREA] or areas
     unit_area = float(np.median(single_pip_candidates))
 
     count = 0
     borderline = False
+    ambiguous_deltas: List[int] = []
     for area in areas:
         if area <= unit_area * _MERGED_BLOB_RATIO:
             count += 1
             continue
-        estimated = max(1, round(area / unit_area))
+        ratio = area / unit_area
+        estimated = max(1, round(ratio))
         borderline = True
         if estimated > _MAX_PIPS_PER_HALF:
             continue  # too many estimated to be real pips -- contamination, discard entirely
         count += estimated
-    return count, borderline
+        if abs(ratio - estimated) >= 0.5 - _ALT_COUNT_MARGIN:
+            ambiguous_deltas.append(-1 if ratio < estimated else 1)
+
+    alt_count = None
+    if len(ambiguous_deltas) == 1:
+        alt = count + ambiguous_deltas[0]
+        if 0 <= alt <= _MAX_PIPS_PER_HALF:
+            alt_count = alt
+    return count, borderline, alt_count
 
 
 class OpenCVTileClassifier:
@@ -297,13 +316,23 @@ class OpenCVTileClassifier:
             mid = w // 2
             half_a, half_b = tile_crop[:, : mid - gap], tile_crop[:, mid + gap:]
 
-        count_a, borderline_a = _count_pips(half_a)
-        count_b, borderline_b = _count_pips(half_b)
+        count_a, borderline_a, alt_a = _count_pips(half_a)
+        count_b, borderline_b, alt_b = _count_pips(half_b)
         if not (0 <= count_a <= 6 and 0 <= count_b <= 6):
             return []
 
         confidence = 0.6 if (borderline_a or borderline_b) else 1.0
-        return [(Tile.of(count_a, count_b), confidence)]
+        candidates = [(Tile.of(count_a, count_b), confidence)]
+
+        # Only one half's ambiguity gets a second candidate: with both halves
+        # independently ambiguous, the alternates would combine into several
+        # equally-unfounded guesses rather than one real second reading.
+        if alt_a is not None and alt_b is None:
+            candidates.append((Tile.of(alt_a, count_b), confidence * 0.5))
+        elif alt_b is not None and alt_a is None:
+            candidates.append((Tile.of(count_a, alt_b), confidence * 0.5))
+
+        return candidates
 
 
 def observe_frame(
