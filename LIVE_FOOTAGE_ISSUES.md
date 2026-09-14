@@ -30,6 +30,8 @@ This happened during ordinary gameplay with small, already-won trick piles (3-4 
 
 This is the same class of problem ROADMAP.md's "TileLocalizer can't yet split touching clusters" already tracks (its own real-footage test fixture, `fixtures/real_footage_touching_cluster.jpg`, documents the identical failure mode) — a real fix needs actual tile/cluster separation (e.g. detecting the divider line between two touching tiles), not another motion- or area-based gate like the sweep/cluster fixes above. Flagging here rather than attempting an under-evidenced threshold change.
 
+An offline replay of `session_3` (`tools/replay_video.py`) independently reproduces the same signature — repeated spurious `1-1` plays logged as `PLAY_BEFORE_CONTRACT` irregularities before a real play — corroborating this as a reproducible detector limitation rather than a one-off misread.
+
 ## Things to keep watching
 
 - A laptop sits on the table inside the calibrated capture corners in this
@@ -53,11 +55,21 @@ this is a candidate to pick up now:
 - Trump inference via observed void contradictions beyond the first lead.
 - Force-closed trick recovery via the trick winner's pile.
 - Automated retroactive reinterpretation of a late-discovered revoke.
-- Confidence-tuned, multi-tier hand-outcome classification.
-- Real table/camera measurements for `simgen`'s `TABLE_SIZE_M`, zone
-  coordinates, and `default_camera()`'s framing distance.
+- Confidence-tuned, multi-tier hand-outcome classification (needs a real
+  misdeal/throw-in example to calibrate against; none of the recorded
+  sessions has one yet).
 - Phase 2-4 numeric acceptance targets (per-tile accuracy, exact final-score
-  match), validated against this real recorded data instead of synthetic.
+  match): `tools/replay_video.py` can now run the detector against saved
+  footage and diff its output against a session's original log, but an
+  actual accuracy number against ROADMAP's target still needs a hand-authored
+  ground-truth annotation of a real session, which doesn't exist yet.
+
+Real table/camera measurements for `simgen`'s `TABLE_SIZE_M`, zone
+coordinates, and `default_camera()`'s framing distance remain blocked, not
+unblocked: `calibration.json` only holds a pixel-space homography with no
+real-world unit mapping, and no camera calibration (e.g. a checkerboard
+capture) has been taken. This needs Jordan to physically measure the table
+or capture a calibration checkerboard shot before it's buildable.
 
 ## Iterative loop
 
@@ -68,7 +80,14 @@ this is a candidate to pick up now:
    `cv2.VideoWriter` never writes its moov atom and the file won't play).
 3. Query `events`/`irregularities` for that session, cross-reference
    suspicious entries (duplicates, unexpected irregularities, zero/low
-   confidence) against the recorded video/audio at that timestamp.
+   confidence) against the recorded video/audio at that timestamp. Or run
+   `tools/replay_video.py <video> calibration.json --compare-db <db>
+   --session-id <id>` to re-run the detector against the saved video
+   offline and diff its output against the session's original log — useful
+   for reviewing detector behavior without a live camera, though recorded
+   video is a wall-clock-resampled reconstruction of what perception saw
+   live, so a diff is a starting point for manual review, not a pass/fail
+   regression signal.
 4. Root-cause in the relevant perception/engine module, fix, and where
    practical add a regression test using this real footage's observed shape
    as the fixture (not just synthetic data).
