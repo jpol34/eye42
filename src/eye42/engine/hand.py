@@ -26,9 +26,12 @@ from typing import Dict, List, Optional
 
 from ..telemetry import EventStore, repair_sink
 from .bidding import (
+    BidKind,
     BiddingError,
     BiddingRound,
     Contract,
+    SPLASH_MIN_MARKS,
+    partner_of,
     team_of,
 )
 from .events import (
@@ -42,7 +45,7 @@ from .events import (
 )
 from .repair import Irregularity, IrregularityKind, RepairLog
 from .scoring import TRICKS_PER_HAND, HandResult, HandScoreTracker
-from .tiles import Tile, effective_suit
+from .tiles import Tile, effective_suit, follows_suit
 from .trick import PlayViolation, Trick
 from .trump_inference import TrumpHypothesisTracker
 
@@ -82,6 +85,7 @@ class HandState:
     scoring_disputed: bool = field(default=False, init=False)  # the real score/marks can't be trusted either
     _orphan_plays: List[TilePlayed] = field(default_factory=list, init=False)
     _plays_by_seat: Dict[int, int] = field(default_factory=dict, init=False)
+    _revokes_checked: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
         self.bidding = BiddingRound(dealer=self.dealer)
@@ -200,6 +204,14 @@ class HandState:
             ))
             return
 
+        if not self.tricks and (self._current_trick is None or not self._current_trick.plays):
+            # Only evidence of splash/plunge before the hand's first tile is
+            # played -- a stray/misheard call_trump arriving mid-hand (e.g.
+            # after a real trump call and lead already happened normally)
+            # must not retroactively reclassify an already-correct contract
+            # and silently overwrite an already-confirmed trump.
+            self._maybe_infer_splash_or_plunge(caller)
+
         if caller != self.contract.trump_caller:
             self.repairs.log_irregularity(Irregularity(
                 kind=IrregularityKind.TRUMP_CALLED_BY_WRONG_SEAT,
@@ -247,6 +259,61 @@ class HandState:
             leader = self.contract.trump_caller if not self.tricks else self.tricks[-1].winner
             self._current_trick = Trick(leader=leader, trump=self.trump_tracker.best_guess)
         return self._current_trick
+
+    def _maybe_infer_splash_or_plunge(self, actor: int) -> bool:
+        """A plain marks contract's trump-caller role landing on the bidder's
+        PARTNER (not the bidder) -- whether by the partner leading the first
+        trick, or the partner calling trump before any tile is played -- is
+        exactly what splash/plunge looks like from observed play alone.
+        ``Contract.trump_caller`` already resolves correctly for SPLASH/
+        PLUNGE, but a plain ``BidKind.MARKS`` contract still points
+        ``trump_caller`` at the bidder, so without this the partner's call or
+        lead would just get logged as a false wrong-seat/out-of-turn
+        irregularity. Called from both ``call_trump`` and the first-lead
+        handling in ``_play_tile_now``, whichever happens first in a given
+        hand; a no-op once the contract is no longer a plain ``MARKS`` bid
+        (already upgraded, or never was one).
+
+        Always reclassifies to SPLASH, never PLUNGE: nothing observable live
+        (no hole-camera) distinguishes them, and every behavior that matters
+        here -- ``trump_caller``, ``marks_at_stake``, ``points_needed``,
+        ``requires_sweep`` -- is identical between the two, so the label is a
+        cosmetic guess only. Requiring ``SPLASH_MIN_MARKS`` (the lower of the
+        two thresholds) rather than ``PLUNGE_MIN_MARKS`` means a real 4-mark
+        plunge is never rejected by this check.
+
+        Below ``SPLASH_MIN_MARKS`` marks, no valid splash/plunge bid exists,
+        so the partner acting as trump-caller is left as a genuine
+        irregularity instead (unchanged existing handling). Returns whether
+        it upgraded the contract, so a caller that also needs to fix up
+        other state (e.g. a trick's already-assigned leader) knows to do so.
+        """
+        contract = self.contract
+        if contract is None or contract.kind != BidKind.MARKS:
+            return False
+        if self.trump_tracker.is_confirmed:
+            # Trump is already settled -- by the bidder (ruling out splash/
+            # plunge outright, since the bidder never calls trump under a
+            # real one) or by an earlier, legitimate run of this same
+            # inference. Either way, a later partner-as-trump-caller signal
+            # (a stray/duplicate call, or an out-of-turn/misattributed lead)
+            # is no longer evidence of anything -- it's an irregularity to
+            # flag through the ordinary wrong-seat/out-of-turn paths, not a
+            # license to retroactively reclassify an already-settled contract.
+            return False
+        if actor != partner_of(contract.bidder) or contract.amount < SPLASH_MIN_MARKS:
+            return False
+        self.bidding.upgrade_to_splash_or_plunge(BidKind.SPLASH)
+        self.repairs.log_irregularity(Irregularity(
+            kind=IrregularityKind.SPLASH_PLUNGE_INFERRED,
+            reason=(
+                f"seat {actor} (bidder {contract.bidder}'s partner) acted as trump-caller "
+                f"under a {contract.amount}-mark contract -- reclassified as splash/plunge"
+            ),
+            player=actor,
+            needs_confirmation=True,
+        ))
+        return True
 
     def play_tile(self, event: TilePlayed) -> None:
         if self.contract is None:
@@ -356,6 +423,8 @@ class HandState:
             trick = self._ensure_trick_started()
 
         if not self.tricks and not trick.plays:
+            if self._maybe_infer_splash_or_plunge(event.player):
+                trick.leader = event.player
             # First tile of the hand: resolve trump from lead if not already known.
             cue = self._pending_cue
             if not self.trump_tracker.is_confirmed:
@@ -487,8 +556,7 @@ class HandState:
         # being applied incorrectly. Skip this trick's voids rather than record
         # false ones -- but still stamp `_voids_trump`, or the next trick sees a
         # mismatch and wipes the (good) voids for no reason.
-        led_tile = trick.plays[0][1]
-        if effective_suit(led_tile, trump, None) != trick.led_suit:
+        if not self._led_suit_is_trustworthy(trick, trump):
             self._voids_trump = trump
             return
 
@@ -497,6 +565,20 @@ class HandState:
                 continue
             if effective_suit(tile, trump, trick.led_suit) != trick.led_suit:
                 self.voids[player].add(trick.led_suit)
+
+    def _led_suit_is_trustworthy(self, trick: Trick, trump: int) -> bool:
+        """A trick's ``led_suit`` was frozen when it was led, under whatever
+        trump was the best guess *then*. If trump was confirmed later (speech
+        lagging video -- the realistic case for this project) and reinterprets
+        the led tile into a different suit, every "didn't follow" judgement
+        against ``trick.led_suit`` would be measured against the wrong suit.
+        Shared by ``_record_voids`` and ``_detect_revokes``, both of which
+        need to skip a trick this has happened to rather than judge it wrong.
+        """
+        if trick.led_suit is None or not trick.plays:
+            return False
+        led_tile = trick.plays[0][1]
+        return effective_suit(led_tile, trump, None) == trick.led_suit
 
     # ---- irregular end (concession / redeal) -----------------------------
 
@@ -568,11 +650,93 @@ class HandState:
             ],
         }
 
+    def _detect_revokes(self) -> None:
+        """Retroactive revoke detection.
+
+        ``PlayViolation.REVOKE`` (trick.py) only fires when a player's
+        concealed hand is passed into ``Trick.check_play``/``play`` -- but no
+        player's hand is ever observed live (no hole-camera), so ``hand.py``'s
+        live path always calls ``trick.play(..., strict=False)`` with no
+        ``hand`` argument, and that violation never fires there in practice.
+
+        By a hand's end, though, every seat's holding at any past moment is
+        reconstructable without any oracle knowledge: a player's remaining
+        hand at trick *i* is exactly the tiles they go on to play in trick
+        *i* and every trick after it (a played tile leaves the hand and is
+        never seen again, and all 28 tiles are accounted for by the end of a
+        cleanly-completed hand). So if a player didn't follow the led suit in
+        trick *i* but later plays a tile that would have followed it, that's
+        a hard contradiction: they held a follower and chose not to play it.
+
+        Only runs when the whole hand's data is trustworthy enough for that
+        reconstruction to actually hold -- skips entirely (never guesses)
+        otherwise, same conservative posture as ``_record_voids``.
+        """
+        if self._revokes_checked:
+            return
+        self._revokes_checked = True
+
+        if not self.trump_tracker.is_confirmed:
+            return
+        if self.disputed or self.scoring_disputed or self.misdeal_suspected:
+            return
+        if self.repairs.has_conflicts:
+            # A misread/duplicate tile attributed to the wrong seat would
+            # corrupt exactly the union-of-plays reconstruction this relies
+            # on -- see the conflict log for provenance.
+            return
+        if any(ir.kind == IrregularityKind.AMBIGUOUS_ATTRIBUTION for ir in self.repairs.irregularities):
+            # A shaky guess at *who* played a tile breaks the same
+            # reconstruction assumption -- the union of plays is only
+            # trustworthy if every play's seat attribution is trustworthy too.
+            return
+        if len(self.tricks) != TRICKS_PER_HAND:
+            return
+        for trick in self.tricks:
+            if trick.force_closed or trick.closed_early_for_new_trick or trick.superseded_plays:
+                return
+
+        trump = self.trump_tracker.confirmed
+        for i, trick in enumerate(self.tricks):
+            led_suit = trick.led_suit
+            if not self._led_suit_is_trustworthy(trick, trump):
+                continue
+            for player, tile in trick.plays:
+                if PlayViolation.REVOKE in trick.violations.get(player, set()):
+                    continue
+                if follows_suit(tile, trump, led_suit):
+                    continue
+                held_a_follower_later = any(
+                    follows_suit(later_tile, trump, led_suit)
+                    for later_trick in self.tricks[i + 1:]
+                    for later_player, later_tile in later_trick.plays
+                    if later_player == player
+                )
+                if held_a_follower_later:
+                    # `_record_voids` ran live, before this trick's status as
+                    # a genuine revoke (rather than a real void) was knowable,
+                    # and recorded `led_suit` as a void for `player` -- a
+                    # false constraint per its own docstring. Undo it now that
+                    # better information exists, or a stale false void keeps
+                    # corrupting engine.probability's deal sampler for the
+                    # rest of the hand's life.
+                    self.voids[player].discard(led_suit)
+                    self.repairs.log_irregularity(Irregularity(
+                        kind=IrregularityKind.REVOKE,
+                        reason=(
+                            f"seat {player} did not follow suit {led_suit} in trick "
+                            f"{i + 1} but later played a tile of that suit"
+                        ),
+                        player=player,
+                        needs_confirmation=True,
+                    ))
+
     # ---- result ------------------------------------------------------
 
     def final_result(self) -> HandResult:
         if self.scorer is None:
             raise HandError("bidding never resolved to a contract")
+        self._detect_revokes()
         if self.outcome_kind == HandOutcomeKind.REDEAL:
             return HandResult(
                 bidding_team=team_of(self.contract.bidder),  # type: ignore[union-attr]

@@ -179,16 +179,6 @@ against real footage.
 
 ## Known gaps / ideas under consideration
 
-- **Splash/plunge is currently unreachable through live bidding.** The
-  correct mechanism — infer splash/plunge from who actually leads the first
-  trick under a MARKS contract — needs new state (who led trick 1) and its
-  own design pass; not yet built. `Contract.trump_caller` already correctly
-  resolves to the bidder's partner for SPLASH/PLUNGE, so once this lands, no
-  further change should be needed there.
-- **Revoke detection has no live path today.** In principle it doesn't need
-  any oracle knowledge: by a hand's end, every seat's original holding is
-  reconstructable from the union of what they actually played, so a genuine
-  revoke could be checked retroactively. Not built.
 - **Trump determination beyond the first lead.** The real priority order, as
   actually played: (1) an explicit verbal call is always primary and
   permanent — it must never be second-guessed by what the caller
