@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "eye42"
 version = "0.1.0"
-description = "Texas 42 domino rules/scoring engine (bidding, trump, tricks, score) built and tested; passive camera+mic reconstruction (perception, speech) is stubbed for a future phase."
+description = "Texas 42 domino rules/scoring engine (bidding, trump, tricks, score); camera perception and local-Whisper speech parsing reconstruct play from real recorded sessions."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
@@ -32,7 +32,7 @@ perception-training = [
     "ultralytics",
 ]
 speech = [
-    "faster-whisper",
+    "faster-whisper>=1.2.0",
 ]
 sim = [
     "mujoco>=3.12",
@@ -53,7 +53,7 @@ live = [
 where = ["src"]
 
 [tool.pytest.ini_options]
-testpaths = ["src/eye42/engine/tests", "src/eye42/perception/tests", "src/eye42/simgen/tests"]
+testpaths = ["src/eye42/engine/tests", "src/eye42/perception/tests", "src/eye42/simgen/tests", "src/eye42/speech/tests"]
 markers = [
     "slow: exercises real physics/rendering over a full scripted hand -- seconds, not milliseconds",
 ]

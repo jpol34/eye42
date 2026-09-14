@@ -896,3 +896,53 @@ interpreter needed at all. The `blenderproc` package itself is not installed or 
 the whole initiative: photoreal rendering is available today, in-process, CPU-only, at a
 few seconds per frame for a modest scene -- not blocked on GPU rental or a separate
 render-farm architecture.
+
+## Speech: real-audio Whisper validation
+
+Ran `faster-whisper` (1.2.0, CPU-only -- Intel Iris Xe integrated graphics, no
+discrete NVIDIA GPU) against two real recorded gameplay sessions'
+audio (`game1_boundary.wav`, `game1_final.wav`, ~9 minutes sampled out of
+~17 total, 44100Hz mono int16 WAV via `tools/live_view.py`'s
+`AudioRecorder`).
+
+**Model/config choice: `base` + `vad_filter=True`.** Measured on 3-minute
+chunks, `int8` compute: `tiny` (no VAD) ran ~10x real-time but rendered
+bid-shaped numbers as words ("six, one, six, two"); `base` (no VAD) rendered
+the same numbers as digit pairs ("6-1, 6-2" -- much closer to what a
+tile/bid parser needs) but only ran ~2.7x real-time; `base` **with**
+`vad_filter=True` matched `base`'s accuracy while running at `tiny`'s speed
+(~10x real-time), and produced fewer short spurious one-word segments
+(fewer breath/pause fragments). No hallucination-during-silence was
+observed on this audio (its background noise is mostly real cross-talk,
+not pure silence, so that particular Whisper failure mode didn't surface
+here -- still worth designing around, since it's well documented
+elsewhere).
+
+**Real marks-bid/pass language transcribes correctly**, confirming the
+closed-vocabulary approach is viable against real speech, not just theory:
+"Give him the mark.", "you have two marks now.", "We're going to play four
+marks on the board.", "That's the pass" all appear verbatim in the
+transcripts.
+
+**No point-bid ("thirty", "thirty-one", ...) examples turned up** in the
+~9 minutes sampled -- those clips were mid-play/marks-heavy stretches, not
+point-bidding rounds. `speech.bid_parser`'s point-bid vocabulary matching
+is therefore unvalidated against real speech (unlike marks bids); revisit
+once more of the ~17 total minutes is sampled, or once tonight's session
+supplies point-bidding audio.
+
+**A real false-positive found by `tools/transcribe_session.py` against
+`game1_boundary.wav`, fixed**: the utterance "I mean, you know the six six
+five four so I gave you the mark" initially scored as a legal "6 marks"
+bid -- a whole-utterance number search picked up "six" from a run of
+tile-identity numbers ("six six five four", players discussing tiles, not
+bidding) rather than from an actual mark count, and
+`BidCandidateScorer`'s rotation-legality check couldn't catch it because
+the *shape* (a number co-occurring with "mark") was genuinely
+vocabulary-shaped and turn-order-legal at that point. Fixed by restricting
+marks-count extraction to the token window immediately before the
+marks-word (`_number_immediately_before`), rather than searching the whole
+utterance -- point-bid extraction still searches the whole utterance,
+since a legal point-bid utterance is expected to be short and
+number-only. Re-running the same audio through `tools/transcribe_session.py`
+after the fix no longer produces this false positive.
