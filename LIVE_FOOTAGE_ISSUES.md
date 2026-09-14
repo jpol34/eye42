@@ -32,6 +32,10 @@ This is the same class of problem ROADMAP.md's "TileLocalizer can't yet split to
 
 An offline replay of `session_3` (`tools/replay_video.py`) independently reproduces the same signature — repeated spurious `1-1` plays logged as `PLAY_BEFORE_CONTRACT` irregularities before a real play — corroborating this as a reproducible detector limitation rather than a one-off misread.
 
+This is also the root cause blocking several other real-footage-dependent items: `session_5`'s hand-boundary detection never advanced past `hand_index=0` across its full ~16-minute recording (263 logged `TilePlayed` events, only 21 distinct tiles), so no clean multi-trick real hand currently exists to validate anything that needs one against (per-tile accuracy scoring, trump-inference-beyond-first-lead design validation, etc.).
+
+A classical-CV split (distance-transform + watershed, seeded by tile-width-spaced local maxima) was tried against the real `fixtures/real_footage_touching_cluster.jpg` fixture and did not cleanly separate a known 2-tile merged blob on a first attempt — not proven to be a viable fix. The actual integration path already exists in-repo: `eye42.perception.tile_segment.TileSegmenter` wraps a YOLOv8-seg ONNX model and is structurally compatible with `TileLocalizer.find_tiles`'s output (`TileRegion` list), with its pre/postprocessing already unit-tested; `test_segmenter_splits_the_real_touching_cluster_fixture` is currently skipped for lack of a trained model at `models/tile_segmenter.onnx`. What's missing is the trained model artifact (via `tools/train_tile_segmenter.py`, which needs the `ultralytics` training extra) and wiring `TileSegmenter` into `tile_detect.py`/`tools/live_view.py` for oversized/ambiguous cluster crops. Jordan is separately setting up AI model training infrastructure for use across projects, including this one — that's the natural path to producing the trained model this already-built integration is waiting on.
+
 ## Things to keep watching
 
 - A laptop sits on the table inside the calibrated capture corners in this
@@ -50,9 +54,12 @@ Real recorded gameplay + audio now exists (video: `live_recordings/`, audio:
 ROADMAP.md's "Blocked on real footage" section listed as waiting on exactly
 this is a candidate to pick up now:
 
-- Ranked multi-candidate tile classification + engine-side conflict
-  reconciliation (`TileIdentityClassifier.classify`).
-- Trump inference via observed void contradictions beyond the first lead.
+- Engine-side conflict reconciliation using `TileIdentityClassifier`'s
+  ranked candidates (the classifier half is done; this needs its own
+  design pass — see ROADMAP.md).
+- Trump inference via observed void contradictions beyond the first lead
+  (design questions are answerable now, but validating against a real hand
+  needs issue #2 above resolved first).
 - Force-closed trick recovery via the trick winner's pile.
 - Automated retroactive reinterpretation of a late-discovered revoke.
 - Confidence-tuned, multi-tier hand-outcome classification (needs a real
