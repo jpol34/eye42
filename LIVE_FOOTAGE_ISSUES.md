@@ -23,6 +23,18 @@ second. Worth a fix (e.g. don't tie process lifetime to stdin at all — drive
 shutdown from the Flask app or a signal only) before this gets automated
 further.
 
+### 2. `VideoRecorder`'s output has no crash/power-loss resilience
+
+`cv2.VideoWriter` only writes its finalizing moov atom on `release()`
+(`VideoRecorder.close()`), so any non-graceful end of the process — a
+crash, a killed process, a power loss — leaves an mp4 with no moov atom,
+unrecoverable by normal playback (`moov atom not found`). Confirmed for
+real: a mid-session laptop power loss lost a 2.3GB/~36-minute video
+recording outright, while the matching WAV audio (no comparable finalize
+step) survived intact. Worth a more resilient container/write strategy
+(e.g. periodic remuxing, or a format that doesn't need a trailing index)
+before relying on this for a session that can't be easily redone.
+
 ## Things to keep watching
 
 - A laptop sits on the table inside the calibrated capture corners in this
